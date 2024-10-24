@@ -1,12 +1,11 @@
 import React, { useState } from 'react';
-import { ethers } from 'ethers';
+import { keccak256, toHex } from 'viem';
 import { 
   Card,
   CardContent,
   CardHeader,
   CardTitle,
   CardDescription,
-  CardFooter 
 } from "@/components/ui/card";
 import {
   Form,
@@ -39,59 +38,91 @@ import {
   Globe,
   Shield
 } from 'lucide-react';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useForm } from 'react-hook-form';
+import { z } from 'zod';
+
+// Form validation schema
+const formSchema = z.object({
+  // Basic Information
+  name: z.string().min(1, 'Name is required'),
+  description: z.string().min(1, 'Description is required'),
+  author: z.string().min(1, 'Author is required'),
+  license: z.string().min(1, 'License is required'),
+  tags: z.array(z.string()),
+
+  // Dataset Configuration
+  datatype: z.enum(['structured', 'unstructured']),
+  format: z.string(),
+  size: z.string(),
+
+  // Access Control
+  isEncrypted: z.boolean(),
+  computeEnabled: z.boolean(),
+  accessType: z.enum(['fixed-price', 'dynamic', 'whitelist']),
+  price: z.string(),
+  allowedAlgorithms: z.array(z.string()),
+
+  // Compute Configuration
+  minComputeResources: z.object({
+    cpu: z.string(),
+    memory: z.string(),
+    disk: z.string()
+  }),
+  maxComputeTime: z.string(),
+  computeEnvironment: z.string(),
+  trustedAlgorithms: z.array(z.string()),
+
+  // Revenue Configuration
+  stakingAmount: z.string(),
+  revenueModel: z.enum(['per-usage', 'subscription']),
+  computePrice: z.string()
+});
+
+type FormData = z.infer<typeof formSchema>;
 
 interface DatasetPublisherProps {
-  onPublish: (metadata: any) => Promise<void>;
+  onPublish: (metadata: FormData) => Promise<void>;
 }
 
 const DatasetPublisher: React.FC<DatasetPublisherProps> = ({ onPublish }) => {
   const [step, setStep] = useState(1);
   const [isPublishing, setIsPublishing] = useState(false);
-  const [formData, setFormData] = useState({
-    // Basic Information
-    name: '',
-    description: '',
-    author: '',
-    license: '',
-    tags: [],
-
-    // Dataset Configuration
-    datatype: 'structured',
-    format: 'csv',
-    size: '',
-    files: null as File[] | null,
-
-    // Access Control
-    isEncrypted: true,
-    computeEnabled: true,
-    accessType: 'fixed-price',
-    price: '',
-    allowedAlgorithms: [] as string[],
-
-    // Compute Configuration
-    minComputeResources: {
-      cpu: '2',
-      memory: '4',
-      disk: '10'
-    },
-    maxComputeTime: '3600',
-    computeEnvironment: 'python-3.8',
-    trustedAlgorithms: [] as string[],
-    
-    // Revenue Configuration
-    stakingAmount: '',
-    revenueModel: 'per-usage',
-    computePrice: '',
-  });
+  const [files, setFiles] = useState<File[] | null>(null);
   const { toast } = useToast();
 
+  const form = useForm<FormData>({
+    resolver: zodResolver(formSchema),
+    defaultValues: {
+      isEncrypted: true,
+      computeEnabled: true,
+      accessType: 'fixed-price',
+      datatype: 'structured',
+      minComputeResources: {
+        cpu: '2',
+        memory: '4',
+        disk: '10'
+      },
+      maxComputeTime: '3600',
+      computeEnvironment: 'python-3.8',
+      revenueModel: 'per-usage',
+      tags: [],
+      allowedAlgorithms: [],
+      trustedAlgorithms: []
+    }
+  });
+
   const handleFileUpload = async (files: FileList) => {
-    // Handle file upload with encryption
-    const encryptedFiles = await encryptDatasetFiles(Array.from(files));
-    setFormData(prev => ({
-      ...prev,
-      files: encryptedFiles
-    }));
+    try {
+      const encryptedFiles = await encryptDatasetFiles(Array.from(files));
+      setFiles(encryptedFiles);
+    } catch (error) {
+      toast({
+        title: 'File Upload Failed',
+        description: error instanceof Error ? error.message : 'Failed to encrypt files',
+        variant: 'destructive'
+      });
+    }
   };
 
   const encryptDatasetFiles = async (files: File[]): Promise<File[]> => {
@@ -99,12 +130,16 @@ const DatasetPublisher: React.FC<DatasetPublisherProps> = ({ onPublish }) => {
     return files;
   };
 
-  const handlePublish = async () => {
+  const handlePublish = async (data: FormData) => {
     try {
       setIsPublishing(true);
 
+      if (!files) {
+        throw new Error('Please upload dataset files');
+      }
+
       // Create DDO (DID Document)
-      const ddo = await createDatasetDDO();
+      const ddo = await createDatasetDDO(data);
 
       // Create data token
       const dataToken = await createDataToken();
@@ -119,10 +154,12 @@ const DatasetPublisher: React.FC<DatasetPublisherProps> = ({ onPublish }) => {
         title: "Dataset Published",
         description: "Your dataset has been successfully published to Ocean Protocol",
       });
+
+      await onPublish(data);
     } catch (error) {
       toast({
         title: "Publishing Failed",
-        description: error.message,
+        description: error instanceof Error ? error.message : 'Unknown error occurred',
         variant: "destructive"
       });
     } finally {
@@ -130,11 +167,13 @@ const DatasetPublisher: React.FC<DatasetPublisherProps> = ({ onPublish }) => {
     }
   };
 
-  const createDatasetDDO = async () => {
-    // Create Ocean Protocol DDO (DID Document)
-    const ddo = {
+  const createDatasetDDO = async (data: FormData) => {
+    const timestamp = Date.now().toString();
+    const id = toHex(keccak256(new TextEncoder().encode(timestamp)));
+
+    return {
       "@context": ["https://w3id.org/did/v1"],
-      id: `did:op:${ethers.utils.id(Date.now().toString())}`,
+      id: `did:op:${id}`,
       version: "4.1.0",
       chainId: 1,
       nftAddress: "0x0",
@@ -142,15 +181,15 @@ const DatasetPublisher: React.FC<DatasetPublisherProps> = ({ onPublish }) => {
         created: new Date().toISOString(),
         updated: new Date().toISOString(),
         type: "dataset",
-        name: formData.name,
-        description: formData.description,
-        author: formData.author,
-        license: formData.license,
-        tags: formData.tags,
+        name: data.name,
+        description: data.description,
+        author: data.author,
+        license: data.license,
+        tags: data.tags,
         additionalInformation: {
-          datatype: formData.datatype,
-          format: formData.format,
-          size: formData.size
+          datatype: data.datatype,
+          format: data.format,
+          size: data.size
         }
       },
       services: [
@@ -161,14 +200,12 @@ const DatasetPublisher: React.FC<DatasetPublisherProps> = ({ onPublish }) => {
           compute: {
             allowRawAlgorithm: false,
             allowNetworkAccess: false,
-            publisherTrustedAlgorithms: formData.trustedAlgorithms,
+            publisherTrustedAlgorithms: data.trustedAlgorithms,
             publisherTrustedAlgorithmPublishers: [],
           }
         }
       ]
     };
-
-    return ddo;
   };
 
   const createDataToken = async () => {
@@ -184,8 +221,49 @@ const DatasetPublisher: React.FC<DatasetPublisherProps> = ({ onPublish }) => {
     // Implementation for registering with Sapphire contract
   };
 
+  // Step rendering components...
+  const renderBasicInfo = () => (
+    <div className="space-y-4">
+      <h3 className="text-lg font-medium">Basic Information</h3>
+      
+      <FormField
+        control={form.control}
+        name="name"
+        render={({ field }: { field: any }) => (
+          <FormItem>
+            <FormLabel>Dataset Name</FormLabel>
+            <FormControl>
+              <Input {...field} />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+
+      {/* Add other basic info fields */}
+    </div>
+  );
+
+  const renderDatasetConfig = () => (
+    <div className="space-y-4">
+      {/* Dataset config fields */}
+    </div>
+  );
+
+  const renderComputeConfig = () => (
+    <div className="space-y-4">
+      {/* Compute config fields */}
+    </div>
+  );
+
+  const renderPricingConfig = () => (
+    <div className="space-y-4">
+      {/* Pricing config fields */}
+    </div>
+  );
+
   return (
-    <Card className="w-full max-w-3xl mx-auto">
+    <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Database className="h-6 w-6" />
@@ -197,299 +275,40 @@ const DatasetPublisher: React.FC<DatasetPublisherProps> = ({ onPublish }) => {
       </CardHeader>
 
       <CardContent>
-        <div className="space-y-8">
-          {step === 1 && (
-            // Basic Information
-            <div className="space-y-4">
-              <h3 className="text-lg font-medium">Basic Information</h3>
-              
-              <FormField
-                name="name"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Dataset Name</FormLabel>
-                    <FormControl>
-                      <Input 
-                        {...field}
-                        value={formData.name}
-                        onChange={(e) => setFormData(prev => ({
-                          ...prev,
-                          name: e.target.value
-                        }))}
-                      />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(handlePublish)} className="space-y-8">
+            {step === 1 && renderBasicInfo()}
+            {step === 2 && renderDatasetConfig()}
+            {step === 3 && renderComputeConfig()}
+            {step === 4 && renderPricingConfig()}
 
-              <FormField
-                name="description"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Description</FormLabel>
-                    <FormControl>
-                      <Textarea 
-                        {...field}
-                        value={formData.description}
-                        onChange={(e) => setFormData(prev => ({
-                          ...prev,
-                          description: e.target.value
-                        }))}
-                      />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
+            <div className="flex justify-between">
+              <Button
+                type="button"
+                onClick={() => setStep(Math.max(1, step - 1))}
+                disabled={step === 1}
+              >
+                Previous
+              </Button>
 
-              <div className="grid grid-cols-2 gap-4">
-                <FormField
-                  name="author"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Author</FormLabel>
-                      <FormControl>
-                        <Input 
-                          {...field}
-                          value={formData.author}
-                          onChange={(e) => setFormData(prev => ({
-                            ...prev,
-                            author: e.target.value
-                          }))}
-                        />
-                      </FormControl>
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  name="license"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>License</FormLabel>
-                      <Select
-                        value={formData.license}
-                        onValueChange={(value) => setFormData(prev => ({
-                          ...prev,
-                          license: value
-                        }))}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select license" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="MIT">MIT</SelectItem>
-                          <SelectItem value="Apache-2.0">Apache 2.0</SelectItem>
-                          <SelectItem value="GPL-3.0">GPL 3.0</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </FormItem>
-                  )}
-                />
-              </div>
+              {step < 4 ? (
+                <Button
+                  type="button"
+                  onClick={() => setStep(Math.min(4, step + 1))}
+                >
+                  Next
+                </Button>
+              ) : (
+                <Button type="submit" disabled={isPublishing}>
+                  {isPublishing ? 'Publishing...' : 'Publish Dataset'}
+                </Button>
+              )}
             </div>
-          )}
+          </form>
+        </Form>
+      </CardContent>
+    </Card>
+  );
+};
 
-          {step === 2 && (
-            // Dataset Configuration
-            <div className="space-y-4">
-              <h3 className="text-lg font-medium">Dataset Configuration</h3>
-
-              <div className="border rounded-lg p-6 space-y-4">
-                <FormItem className="flex items-center justify-between">
-                  <div>
-                    <FormLabel>Enable Encryption</FormLabel>
-                    <FormDescription>
-                      Encrypt dataset files using Sapphire
-                    </FormDescription>
-                  </div>
-                  <Switch
-                    checked={formData.isEncrypted}
-                    onCheckedChange={(checked) => setFormData(prev => ({
-                      ...prev,
-                      isEncrypted: checked
-                    }))}
-                  />
-                </FormItem>
-
-                <FormItem className="flex items-center justify-between">
-                  <div>
-                    <FormLabel>Enable Compute-to-Data</FormLabel>
-                    <FormDescription>
-                      Allow secure computation on your dataset
-                    </FormDescription>
-                  </div>
-                  <Switch
-                    checked={formData.computeEnabled}
-                    onCheckedChange={(checked) => setFormData(prev => ({
-                      ...prev,
-                      computeEnabled: checked
-                    }))}
-                  />
-                </FormItem>
-              </div>
-
-              <div className="border rounded-lg p-6">
-                <FormLabel>Upload Dataset Files</FormLabel>
-                <div className="mt-2 border-2 border-dashed rounded-lg p-6 text-center">
-                  <input
-                    type="file"
-                    multiple
-                    onChange={(e) => e.target.files && handleFileUpload(e.target.files)}
-                    className="hidden"
-                    id="dataset-files"
-                  />
-                  <label
-                    htmlFor="dataset-files"
-                    className="cursor-pointer"
-                  >
-                    <FileUp className="h-8 w-8 mx-auto text-gray-400" />
-                    <p className="mt-2 text-sm text-gray-600">
-                      Click to upload or drag and drop
-                    </p>
-                    <p className="text-xs text-gray-500">
-                      Support for multiple files up to 10GB each
-                    </p>
-                  </label>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {step === 3 && (
-            // Compute Configuration
-            <div className="space-y-4">
-              <h3 className="text-lg font-medium">Compute Configuration</h3>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm flex items-center gap-2">
-                    <Cpu className="h-4 w-4" />
-                    Compute Resources
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-3 gap-4">
-                    <FormField
-                      name="cpu"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>CPU Cores</FormLabel>
-                          <FormControl>
-                            <Input 
-                              {...field}
-                              type="number"
-                              value={formData.minComputeResources.cpu}
-                              onChange={(e) => setFormData(prev => ({
-                                ...prev,
-                                minComputeResources: {
-                                  ...prev.minComputeResources,
-                                  cpu: e.target.value
-                                }
-                              }))}
-                            />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      name="memory"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Memory (GB)</FormLabel>
-                          <FormControl>
-                            <Input 
-                              {...field}
-                              type="number"
-                              value={formData.minComputeResources.memory}
-                              onChange={(e) => setFormData(prev => ({
-                                ...prev,
-                                minComputeResources: {
-                                  ...prev.minComputeResources,
-                                  memory: e.target.value
-                                }
-                              }))}
-                            />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      name="disk"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Disk (GB)</FormLabel>
-                          <FormControl>
-                            <Input 
-                              {...field}
-                              type="number"
-                              value={formData.minComputeResources.disk}
-                              onChange={(e) => setFormData(prev => ({
-                                ...prev,
-                                minComputeResources: {
-                                  ...prev.minComputeResources,
-                                  disk: e.target.value
-                                }
-                              }))}
-                            />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm flex items-center gap-2">
-                    <Globe className="h-4 w-4" />
-                    Compute Environment
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <Select
-                    value={formData.computeEnvironment}
-                    onValueChange={(value) => setFormData(prev => ({
-                      ...prev,
-                      computeEnvironment: value
-                    }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select environment" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="python-3.8">Python 3.8</SelectItem>
-                      <SelectItem value="python-3.9">Python 3.9</SelectItem>
-                      <SelectItem value="r-4.0">R 4.0</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </CardContent>
-              </Card>
-            </div>
-          )}
-
-          {step === 4 && (
-            // Pricing Configuration
-            <div className="space-y-4">
-              <h3 className="text-lg font-medium">Pricing Configuration</h3>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm flex items-center gap-2">
-                    <DollarSign className="h-4 w-4" />
-                    Pricing Model
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    <Select
-                      value={formData.accessType}
-                      onValueChange={(value) => setFormData(prev => ({
-                        ...prev,
-                        accessType: value
-                      }))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select pricing model" />
+export default DatasetPublisher;

@@ -15,7 +15,8 @@ import {
   Legend,
   ResponsiveContainer,
   Scatter,
-  ScatterChart
+  ScatterChart,
+  Cell
 } from 'recharts';
 import {
   Card,
@@ -49,35 +50,103 @@ import {
   Save
 } from 'lucide-react';
 
+// Define color constants
+const COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff7300'];
+
+// Define types for the data structures
+interface TimeframeData {
+  timestamp: string;
+  downloads: number;
+  computeJobs: number;
+  queries: number;
+}
+
+interface PerformanceData {
+  duration: number;
+  resourceUsage: number;
+}
+
+interface RevenueBreakdown {
+  name: string;
+  value: number;
+}
+
+interface RevenueTrend {
+  timestamp: string;
+  revenue: number;
+  costs: number;
+}
+
+interface UserActivityData {
+  hour: number;
+  users: number;
+}
+
+interface UserDemographic {
+  category: string;
+  value: number;
+}
+
 interface AnalyticsData {
   usage: {
-    daily: any[];
-    weekly: any[];
-    monthly: any[];
+    daily: TimeframeData[];
+    weekly: TimeframeData[];
+    monthly: TimeframeData[];
   };
   compute: {
-    performance: any[];
+    performance: PerformanceData[];
     resources: any[];
     costs: any[];
   };
   revenue: {
-    breakdown: any[];
-    trends: any[];
+    breakdown: RevenueBreakdown[];
+    trends: RevenueTrend[];
   };
   users: {
-    activity: any[];
-    demographics: any[];
+    activity: UserActivityData[];
+    demographics: UserDemographic[];
   };
 }
 
+interface ComponentProps {
+  data: any;
+}
+
+// Settings related types and functions
+interface Settings {
+  // Define your settings structure here
+  [key: string]: any;
+}
+
+const fetchSettings = async (): Promise<Settings> => {
+  // Implement your settings fetch logic here
+  return {} as Settings;
+};
+
+const validateSettings = (settings: Settings): boolean => {
+  // Implement your settings validation logic here
+  return true;
+};
+
+const updateSettings = async (settings: Settings): Promise<void> => {
+  // Implement your settings update logic here
+};
+
+const convertToCSV = (data: any[]): string => {
+  // Implement CSV conversion logic here
+  const headers = Object.keys(data[0]).join(',');
+  const rows = data.map(obj => Object.values(obj).join(','));
+  return [headers, ...rows].join('\n');
+};
+
 const AdvancedAnalytics: React.FC<{ datasetId: string }> = ({ datasetId }) => {
-  const [timeframe, setTimeframe] = useState('weekly');
+  const [timeframe, setTimeframe] = useState<'daily' | 'weekly' | 'monthly'>('weekly');
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
-  const [exportFormat, setExportFormat] = useState('json');
+  const [exportFormat, setExportFormat] = useState<'json' | 'csv'>('json');
   const { toast } = useToast();
 
-  // Detailed Analytics Components
-  const UsageMetrics = ({ data }) => (
+  // Component definitions with proper typing
+  const UsageMetrics: React.FC<ComponentProps> = ({ data }) => (
     <Card className="col-span-2">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
@@ -87,7 +156,7 @@ const AdvancedAnalytics: React.FC<{ datasetId: string }> = ({ datasetId }) => {
         <div className="flex items-center gap-2">
           <Select
             value={timeframe}
-            onValueChange={setTimeframe}
+            onValueChange={(value: 'daily' | 'weekly' | 'monthly') => setTimeframe(value)}
           >
             <SelectTrigger className="w-32">
               <SelectValue placeholder="Select timeframe" />
@@ -98,51 +167,53 @@ const AdvancedAnalytics: React.FC<{ datasetId: string }> = ({ datasetId }) => {
               <SelectItem value="monthly">Monthly</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" onClick={() => exportAnalytics('usage')}>
+          <Button onClick={() => exportAnalytics('usage')}>
             <Download className="h-4 w-4 mr-2" />
             Export
           </Button>
         </div>
       </CardHeader>
       <CardContent>
-        <ResponsiveContainer width="100%" height={400}>
-          <AreaChart data={data[timeframe]}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="timestamp" />
-            <YAxis />
-            <Tooltip />
-            <Legend />
-            <Area
-              type="monotone"
-              dataKey="downloads"
-              stackId="1"
-              stroke="#8884d8"
-              fill="#8884d8"
-              name="Downloads"
-            />
-            <Area
-              type="monotone"
-              dataKey="computeJobs"
-              stackId="1"
-              stroke="#82ca9d"
-              fill="#82ca9d"
-              name="Compute Jobs"
-            />
-            <Area
-              type="monotone"
-              dataKey="queries"
-              stackId="1"
-              stroke="#ffc658"
-              fill="#ffc658"
-              name="API Queries"
-            />
-          </AreaChart>
-        </ResponsiveContainer>
+        {data && (
+          <ResponsiveContainer width="100%" height={400}>
+            <AreaChart data={data[timeframe]}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="timestamp" />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Area
+                type="monotone"
+                dataKey="downloads"
+                stackId="1"
+                stroke="#8884d8"
+                fill="#8884d8"
+                name="Downloads"
+              />
+              <Area
+                type="monotone"
+                dataKey="computeJobs"
+                stackId="1"
+                stroke="#82ca9d"
+                fill="#82ca9d"
+                name="Compute Jobs"
+              />
+              <Area
+                type="monotone"
+                dataKey="queries"
+                stackId="1"
+                stroke="#ffc658"
+                fill="#ffc658"
+                name="API Queries"
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        )}
       </CardContent>
     </Card>
   );
 
-  const ComputePerformance = ({ data }) => (
+  const ComputePerformance: React.FC<ComponentProps> = ({ data }) => (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
@@ -151,25 +222,27 @@ const AdvancedAnalytics: React.FC<{ datasetId: string }> = ({ datasetId }) => {
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <ResponsiveContainer width="100%" height={300}>
-          <ScatterChart>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="duration" name="Duration (s)" />
-            <YAxis dataKey="resourceUsage" name="Resource Usage (%)" />
-            <Tooltip cursor={{ strokeDasharray: '3 3' }} />
-            <Legend />
-            <Scatter
-              name="Compute Jobs"
-              data={data.performance}
-              fill="#8884d8"
-            />
-          </ScatterChart>
-        </ResponsiveContainer>
+        {data && (
+          <ResponsiveContainer width="100%" height={300}>
+            <ScatterChart>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="duration" name="Duration (s)" />
+              <YAxis dataKey="resourceUsage" name="Resource Usage (%)" />
+              <Tooltip cursor={{ strokeDasharray: '3 3' }} />
+              <Legend />
+              <Scatter
+                name="Compute Jobs"
+                data={data.performance}
+                fill="#8884d8"
+              />
+            </ScatterChart>
+          </ResponsiveContainer>
+        )}
       </CardContent>
     </Card>
   );
 
-  const RevenueAnalysis = ({ data }) => (
+  const RevenueAnalysis: React.FC<ComponentProps> = ({ data }) => (
     <Card className="col-span-2">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
@@ -178,56 +251,60 @@ const AdvancedAnalytics: React.FC<{ datasetId: string }> = ({ datasetId }) => {
         </CardTitle>
       </CardHeader>
       <CardContent className="grid grid-cols-2 gap-4">
-        <div>
-          <ResponsiveContainer width="100%" height={300}>
-            <PieChart>
-              <Pie
-                data={data.breakdown}
-                dataKey="value"
-                nameKey="name"
-                cx="50%"
-                cy="50%"
-                outerRadius={80}
-                fill="#8884d8"
-                label
-              >
-                {data.breakdown.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip />
-              <Legend />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-        <div>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={data.trends}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="timestamp" />
-              <YAxis />
-              <Tooltip />
-              <Legend />
-              <Line
-                type="monotone"
-                dataKey="revenue"
-                stroke="#8884d8"
-                name="Revenue"
-              />
-              <Line
-                type="monotone"
-                dataKey="costs"
-                stroke="#82ca9d"
-                name="Costs"
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
+        {data && (
+          <>
+            <div>
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    data={data.breakdown}
+                    dataKey="value"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={80}
+                    fill="#8884d8"
+                    label
+                  >
+                    {data.breakdown.map((entry: RevenueBreakdown, index: number) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div>
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={data.trends}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="timestamp" />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="revenue"
+                    stroke="#8884d8"
+                    name="Revenue"
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="costs"
+                    stroke="#82ca9d"
+                    name="Costs"
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </>
+        )}
       </CardContent>
     </Card>
   );
 
-  const UserAnalytics = ({ data }) => (
+  const UserAnalytics: React.FC<ComponentProps> = ({ data }) => (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
@@ -236,51 +313,51 @@ const AdvancedAnalytics: React.FC<{ datasetId: string }> = ({ datasetId }) => {
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="space-y-4">
-          <div>
-            <h4 className="font-medium mb-2">Active Users</h4>
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={data.activity}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="hour" />
-                <YAxis />
-                <Tooltip />
-                <Bar dataKey="users" fill="#8884d8" />
-              </BarChart>
-            </ResponsiveContainer>
+        {data && (
+          <div className="space-y-4">
+            <div>
+              <h4 className="font-medium mb-2">Active Users</h4>
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={data.activity}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="hour" />
+                  <YAxis />
+                  <Tooltip />
+                  <Bar dataKey="users" fill="#8884d8" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <div>
+              <h4 className="font-medium mb-2">User Distribution</h4>
+              <ResponsiveContainer width="100%" height={200}>
+                <PieChart>
+                  <Pie
+                    data={data.demographics}
+                    dataKey="value"
+                    nameKey="category"
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={80}
+                    fill="#8884d8"
+                    label
+                  />
+                  <Tooltip />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
           </div>
-          <div>
-            <h4 className="font-medium mb-2">User Distribution</h4>
-            <ResponsiveContainer width="100%" height={200}>
-              <PieChart>
-                <Pie
-                  data={data.demographics}
-                  dataKey="value"
-                  nameKey="category"
-                  cx="50%"
-                  cy="50%"
-                  outerRadius={80}
-                  fill="#8884d8"
-                  label
-                />
-                <Tooltip />
-                <Legend />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+        )}
       </CardContent>
     </Card>
   );
 
-  // Settings Export/Import
-  const SettingsManager = () => {
+  const SettingsManager: React.FC = () => {
     const handleExport = async () => {
       try {
         const settings = await fetchSettings();
         const data = JSON.stringify(settings, null, 2);
         
-        // Create download
         const blob = new Blob([data], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -298,7 +375,7 @@ const AdvancedAnalytics: React.FC<{ datasetId: string }> = ({ datasetId }) => {
       } catch (error) {
         toast({
           title: "Export Failed",
-          description: error.message,
+          description: error instanceof Error ? error.message : 'Unknown error occurred',
           variant: "destructive"
         });
       }
@@ -309,12 +386,10 @@ const AdvancedAnalytics: React.FC<{ datasetId: string }> = ({ datasetId }) => {
         const content = await file.text();
         const settings = JSON.parse(content);
         
-        // Validate settings
         if (!validateSettings(settings)) {
           throw new Error("Invalid settings format");
         }
 
-        // Apply settings
         await updateSettings(settings);
 
         toast({
@@ -324,7 +399,7 @@ const AdvancedAnalytics: React.FC<{ datasetId: string }> = ({ datasetId }) => {
       } catch (error) {
         toast({
           title: "Import Failed",
-          description: error.message,
+          description: error instanceof Error ? error.message : 'Unknown error occurred',
           variant: "destructive"
         });
       }
@@ -351,8 +426,9 @@ const AdvancedAnalytics: React.FC<{ datasetId: string }> = ({ datasetId }) => {
                 type="file"
                 accept=".json"
                 onChange={(e) => {
-                  if (e.target.files?.[0]) {
-                    handleImport(e.target.files[0]);
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    handleImport(file);
                   }
                 }}
               />
@@ -363,17 +439,18 @@ const AdvancedAnalytics: React.FC<{ datasetId: string }> = ({ datasetId }) => {
     );
   };
 
-  // Analytics Export
-  const exportAnalytics = async (section: string) => {
+  const exportAnalytics = async (section: keyof AnalyticsData | 'all') => {
     try {
-      const data = analyticsData?.[section];
+      if (!analyticsData) return;
+      
+      const data = section === 'all' ? analyticsData : analyticsData[section];
       if (!data) return;
 
-      let exportData;
+      let exportData: string;
       if (exportFormat === 'json') {
         exportData = JSON.stringify(data, null, 2);
-      } else if (exportFormat === 'csv') {
-        exportData = convertToCSV(data);
+      } else {
+        exportData = convertToCSV(Array.isArray(data) ? data : [data]);
       }
 
       const blob = new Blob([exportData], { 
@@ -395,7 +472,7 @@ const AdvancedAnalytics: React.FC<{ datasetId: string }> = ({ datasetId }) => {
     } catch (error) {
       toast({
         title: "Export Failed",
-        description: error.message,
+        description: error instanceof Error ? error.message : 'Unknown error occurred',
         variant: "destructive"
       });
     }
@@ -419,28 +496,16 @@ const AdvancedAnalytics: React.FC<{ datasetId: string }> = ({ datasetId }) => {
             <div className="flex items-center gap-4">
               <Select
                 value={exportFormat}
-                onValueChange={setExportFormat}
+                onValueChange={(value: 'json' | 'csv') => setExportFormat(value)}
               >
                 <SelectTrigger className="w-32">
                   <SelectValue placeholder="Format" />
                 </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="json">JSON</SelectItem>
-                  <SelectItem value="csv">CSV</SelectItem>
-                </SelectContent>
               </Select>
-              <Button onClick={() => exportAnalytics('all')}>
-                <Download className="h-4 w-4 mr-2" />
-                Export All
-              </Button>
             </div>
           </CardContent>
         </Card>
-
-        <SettingsManager />
       </div>
-    </div>
-  );
-};
-
-export default AdvancedAnalytics;
+        </div>
+      );
+    };

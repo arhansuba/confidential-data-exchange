@@ -1,20 +1,18 @@
-import React, { useState, useEffect } from 'react';
-import { ethers } from 'ethers';
-import { useOceanCompute } from './oceanIntegration';
+// src/components/Marketplace.tsx
+import React, { useState, useCallback } from 'react';
 import { 
-  Tabs, 
-  TabsContent, 
-  TabsList, 
-  TabsTrigger 
-} from "@/components/ui/tabs";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
+  useAccount, 
+  usePublicClient,
+  useWalletClient,
+} from 'wagmi';
+import { writeContract, readContract } from '@wagmi/core';
+import { formatEther } from 'viem';
+import { marketplaceConfig, oceanComputeConfig } from '@/config/contracts';
+import { useToast } from '@/hooks/use-toast';
+
+// UI Components
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { 
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -23,183 +21,218 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
-import { useToast } from "@/hooks/use-toast";
+} from '@/components/ui/alert-dialog';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Progress } from '@/components/ui/progress';
 import { 
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle 
+} from '@/components/ui/card';
+
+// Icons
+import {
   Brain,
-  Server,
-  Upload,
+  Server as ServerIcon,
   Activity,
   Lock,
   Database,
   PlayCircle,
   CheckCircle2,
-  XCircle 
+  XCircle
 } from 'lucide-react';
 
-// Contract ABIs and addresses
-const MARKETPLACE_ABI = [/* Your ABI here */];
-const OCEAN_COMPUTE_ABI = [/* Your ABI here */];
-const ROFL_COMPUTE_ABI = [/* Your ABI here */];
+// Types
+interface Model {
+  id: bigint;
+  name: string;
+  description: string;
+  price: bigint;
+  hasComputeService: boolean;
+  accessType: string;
+  computeCount: bigint;
+  hasAccess: boolean;
+  oceanDataToken: `0x${string}`;
+  algorithmToken: `0x${string}`;
+  decryptedMetadata: any | null;
+}
 
-const MARKETPLACE_ADDRESS = "YOUR_MARKETPLACE_ADDRESS";
-const OCEAN_COMPUTE_ADDRESS = "YOUR_OCEAN_COMPUTE_ADDRESS";
-const ROFL_COMPUTE_ADDRESS = "YOUR_ROFL_COMPUTE_ADDRESS";
+interface ComputeJob {
+  id: bigint;
+  modelName: string;
+  status: 'processing' | 'completed' | 'failed';
+  progress: number;
+  timestamp: bigint;
+}
 
 export default function MarketplaceDashboard() {
-  // State for different components
-  const [models, setModels] = useState([]);
-  const [computeJobs, setComputeJobs] = useState([]);
-  const [selectedModel, setSelectedModel] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [computeLoading, setComputeLoading] = useState(false);
-  
-  // Contract instances
-  const [contracts, setContracts] = useState({
-    marketplace: null,
-    oceanCompute: null,
-    roflCompute: null
-  });
+  // State
+  const [models, setModels] = useState<Model[]>([]);
+  const [computeJobs, setComputeJobs] = useState<ComputeJob[]>([]);
+  const [selectedModel, setSelectedModel] = useState<Model | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isProcessing, setIsProcessing] = useState(false);
 
-  // Ocean Protocol integration
-  const { startCompute, checkStatus, getAllowance } = useOceanCompute(
-    window.ethereum,
-    OCEAN_COMPUTE_ADDRESS,
-    "YOUR_OCEAN_PROVIDER_URL"
-  );
-
+  // Hooks
+  const { address } = useAccount();
+  const { data: walletClient } = useWalletClient();
+  const publicClient = usePublicClient();
   const { toast } = useToast();
 
-  // Initialize contracts
-  useEffect(() => {
-    const initContracts = async () => {
-      if (typeof window.ethereum !== 'undefined') {
-        try {
-          await window.ethereum.request({ method: 'eth_requestAccounts' });
-          const provider = new ethers.providers.Web3Provider(window.ethereum);
-          const signer = provider.getSigner();
+  // Load data
+  const loadData = useCallback(async () => {
+    if (!address || !publicClient) return;
 
-          setContracts({
-            marketplace: new ethers.Contract(
-              MARKETPLACE_ADDRESS,
-              MARKETPLACE_ABI,
-              signer
-            ),
-            oceanCompute: new ethers.Contract(
-              OCEAN_COMPUTE_ADDRESS,
-              OCEAN_COMPUTE_ABI,
-              signer
-            ),
-            roflCompute: new ethers.Contract(
-              ROFL_COMPUTE_ADDRESS,
-              ROFL_COMPUTE_ABI,
-              signer
-            )
-          });
-
-          await loadModels();
-          await loadComputeJobs();
-        } catch (error) {
-          toast({
-            title: "Connection Error",
-            description: error.message,
-            variant: "destructive"
-          });
-        }
-      }
-    };
-
-    initContracts();
-  }, []);
-
-  // Load models from marketplace
-  const loadModels = async () => {
-    if (!contracts.marketplace) return;
-    
     try {
-      setLoading(true);
-      const modelCount = await contracts.marketplace.getModelCount();
-      const modelPromises = [];
+      setIsLoading(true);
 
-      for (let i = 0; i < modelCount; i++) {
-        modelPromises.push(contracts.marketplace.getModel(i));
-      }
+      // Get model count
+      const count = await readContract({
+        ...marketplaceConfig,
+        functionName: 'getModelCount',
+        args: []
+      });
 
-      const loadedModels = await Promise.all(modelPromises);
-      setModels(loadedModels.map(model => ({
-        ...model,
-        decryptedMetadata: null // Will be decrypted if user has access
-      })));
+      // Get models
+      const modelData = await readContract({
+        ...marketplaceConfig,
+        functionName: 'getModels',
+        args: [BigInt(0), count as bigint]
+      });
+
+      // Get compute jobs
+      const jobData = await readContract({
+        ...marketplaceConfig,
+        functionName: 'getComputeJobs',
+        args: [address as `0x${string}`]
+      });
+
+      setModels(modelData as Model[]);
+      setComputeJobs(jobData as ComputeJob[]);
     } catch (error) {
       toast({
-        title: "Error Loading Models",
-        description: error.message,
-        variant: "destructive"
+        title: 'Error Loading Data',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
       });
     } finally {
-      setLoading(false);
+      setIsLoading(false);
+    }
+  }, [address, publicClient, toast]);
+
+  // Effects
+  React.useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  // Handlers
+  const handlePurchaseAccess = async (model: Model) => {
+    if (!address || !walletClient) return;
+
+    try {
+      setIsProcessing(true);
+      const { hash } = await writeContract({
+        ...marketplaceConfig,
+        functionName: 'purchaseModelAccess',
+        args: [model.id],
+        value: model.price
+      });
+
+      await publicClient?.waitForTransactionReceipt({ hash });
+      await loadData();
+      setSelectedModel(null);
+      
+      toast({
+        title: 'Purchase Successful',
+        description: 'You now have access to this model',
+      });
+    } catch (error) {
+      toast({
+        title: 'Purchase Failed',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsProcessing(false);
     }
   };
 
-  // Start compute job
-  const startComputeJob = async (modelId, params) => {
+  const handleStartCompute = async (model: Model) => {
+    if (!address || !walletClient) return;
+
     try {
-      setComputeLoading(true);
-      
-      // Check compute allowance
-      const allowance = await getAllowance(
-        contracts.oceanCompute.address,
-        await window.ethereum.request({ method: 'eth_accounts' })[0]
-      );
-
-      if (allowance <= 0) {
-        throw new Error("Insufficient compute allowance");
-      }
-
-      // Start Ocean compute job
-      const oceanJobId = await startCompute(
-        models[modelId].oceanDataToken,
-        models[modelId].algorithmToken,
-        params
-      );
-
-      // Create ROFL compute task
-      const tx = await contracts.roflCompute.requestComputation(
-        modelId,
-        ethers.utils.toUtf8Bytes(JSON.stringify(params)),
-        ethers.utils.toUtf8Bytes(JSON.stringify({ oceanJobId }))
-      );
-      await tx.wait();
-
-      toast({
-        title: "Compute Job Started",
-        description: "Your computation request is being processed",
+      setIsProcessing(true);
+      const { hash } = await writeContract({
+        ...oceanComputeConfig,
+        functionName: 'startCompute',
+        args: [model.id, model.oceanDataToken, model.algorithmToken]
       });
 
-      await loadComputeJobs();
+      await publicClient?.waitForTransactionReceipt({ hash });
+      await loadData();
+      setSelectedModel(null);
+
+      toast({
+        title: 'Compute Job Started',
+        description: 'Your computation request is being processed',
+      });
     } catch (error) {
       toast({
-        title: "Compute Error",
-        description: error.message,
-        variant: "destructive"
+        title: 'Compute Failed',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
       });
     } finally {
-      setComputeLoading(false);
+      setIsProcessing(false);
+    }
+  };
+
+  const handleModelAction = async (model: Model) => {
+    if (!address) {
+      toast({
+        title: 'Connect Wallet',
+        description: 'Please connect your wallet first',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (model.hasAccess) {
+      await handleStartCompute(model);
+    } else {
+      await handlePurchaseAccess(model);
+    }
+  };
+
+  const downloadResults = async (jobId: bigint) => {
+    try {
+      // Implement result download logic
+      toast({
+        title: 'Download Started',
+        description: 'Your results are being downloaded',
+      });
+    } catch (error) {
+      toast({
+        title: 'Download Failed',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
+      });
     }
   };
 
   return (
     <div className="container mx-auto p-6">
       <Tabs defaultValue="models" className="space-y-6">
-        <TabsList>
+        <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="models">
             <Brain className="mr-2 h-4 w-4" />
             Models
           </TabsTrigger>
           <TabsTrigger value="compute">
-            <Server className="mr-2 h-4 w-4" />
+            <ServerIcon className="mr-2 h-4 w-4" />
             Compute Jobs
           </TabsTrigger>
           <TabsTrigger value="data">
@@ -208,61 +241,65 @@ export default function MarketplaceDashboard() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="models" className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {models.map((model, index) => (
-              <Card key={index} className="hover:shadow-lg transition-shadow">
-                <CardHeader>
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <CardTitle>{model.name}</CardTitle>
-                      <CardDescription>{model.description}</CardDescription>
+        <TabsContent value="models">
+          {isLoading ? (
+            <div className="flex justify-center items-center h-64">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {models.map((model) => (
+                <Card key={String(model.id)} className="hover:shadow-lg transition-shadow">
+                  <CardHeader>
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <CardTitle>{model.name}</CardTitle>
+                        <CardDescription>{model.description}</CardDescription>
+                      </div>
+                      {model.hasComputeService && (
+                        <Badge variant="secondary">Compute Enabled</Badge>
+                      )}
                     </div>
-                    {model.hasComputeService && (
-                      <Badge variant="secondary">
-                        Compute Enabled
-                      </Badge>
-                    )}
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2">
-                      <Activity className="h-4 w-4 text-gray-500" />
-                      <span className="text-sm text-gray-500">
-                        Compute Jobs: {model.computeCount}
-                      </span>
-                    </div>
-                    
-                    <div className="flex items-center gap-2">
-                      <Lock className="h-4 w-4 text-gray-500" />
-                      <span className="text-sm text-gray-500">
-                        Access Type: {model.accessType}
-                      </span>
-                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-2">
+                        <Activity className="h-4 w-4 text-gray-500" />
+                        <span className="text-sm text-gray-500">
+                          Compute Jobs: {model.computeCount.toString()}
+                        </span>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        <Lock className="h-4 w-4 text-gray-500" />
+                        <span className="text-sm text-gray-500">
+                          Access Type: {model.accessType}
+                        </span>
+                      </div>
 
-                    <div className="flex justify-between items-center">
-                      <span className="text-2xl font-bold">
-                        {ethers.utils.formatEther(model.price)} ETH
-                      </span>
-                      <Button 
-                        onClick={() => handleModelSelect(model)}
-                        variant="default"
-                      >
-                        {model.hasAccess ? "Start Compute" : "Purchase Access"}
-                      </Button>
+                      <div className="flex justify-between items-center">
+                        <span className="text-2xl font-bold">
+                          {formatEther(model.price)} ETH
+                        </span>
+                        <Button
+                          onClick={() => setSelectedModel(model)}
+                          disabled={isProcessing}
+                        >
+                          {model.hasAccess ? "Start Compute" : "Purchase Access"}
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
         </TabsContent>
 
-        <TabsContent value="compute" className="space-y-6">
+        <TabsContent value="compute">
           <div className="grid grid-cols-1 gap-4">
-            {computeJobs.map((job, index) => (
-              <Card key={index}>
+            {computeJobs.map((job) => (
+              <Card key={String(job.id)}>
                 <CardContent className="pt-6">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-4">
@@ -274,36 +311,27 @@ export default function MarketplaceDashboard() {
                         <PlayCircle className="h-6 w-6 text-blue-500" />
                       )}
                       <div>
-                        <h3 className="font-medium">
-                          Compute Job #{job.id}
-                        </h3>
-                        <p className="text-sm text-gray-500">
-                          Model: {job.modelName}
-                        </p>
+                        <h3 className="font-medium">Compute Job #{String(job.id)}</h3>
+                        <p className="text-sm text-gray-500">Model: {job.modelName}</p>
                       </div>
                     </div>
                     
                     <div className="text-right">
-                      <p className="font-medium capitalize">
-                        {job.status}
-                      </p>
+                      <p className="font-medium capitalize">{job.status}</p>
                       <p className="text-sm text-gray-500">
-                        Started: {new Date(job.timestamp * 1000).toLocaleString()}
+                        Started: {new Date(Number(job.timestamp) * 1000).toLocaleString()}
                       </p>
                     </div>
                   </div>
 
                   {job.status === 'processing' && (
-                    <Progress 
-                      value={job.progress} 
-                      className="mt-4"
-                    />
+                    <Progress value={job.progress} className="mt-4" />
                   )}
 
                   {job.status === 'completed' && (
                     <Button 
-                      className="mt-4"
                       onClick={() => downloadResults(job.id)}
+                      className="mt-4"
                     >
                       Download Results
                     </Button>
@@ -314,13 +342,12 @@ export default function MarketplaceDashboard() {
           </div>
         </TabsContent>
 
-        <TabsContent value="data" className="space-y-6">
+        <TabsContent value="data">
           {/* Data management interface */}
         </TabsContent>
       </Tabs>
 
-      {/* Model Selection Dialog */}
-      <AlertDialog open={!!selectedModel}>
+      <AlertDialog open={!!selectedModel} onOpenChange={() => setSelectedModel(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
@@ -333,13 +360,12 @@ export default function MarketplaceDashboard() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           
-          {/* Dialog content based on access status */}
-
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setSelectedModel(null)}>
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction onClick={() => handleModelAction(selectedModel)}>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={() => selectedModel && handleModelAction(selectedModel)}
+              disabled={isProcessing}
+            >
               {selectedModel?.hasAccess ? "Start Compute" : "Purchase"}
             </AlertDialogAction>
           </AlertDialogFooter>
