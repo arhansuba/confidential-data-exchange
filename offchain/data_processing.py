@@ -1,182 +1,301 @@
-# offchain/data_processing.py
-
 import os
 import json
-import requests
 import hashlib
+import numpy as np
+import pandas as pd
+from typing import Dict, Any, Optional
+from cryptography.fernet import Fernet
 from ocean_lib.ocean.ocean import Ocean
 from ocean_lib.config import Config
 from ocean_lib.assets.asset import Asset
 from ocean_lib.models.compute_input import ComputeInput
+from ocean_lib.services.service import ServiceTypes
 from dotenv import load_dotenv
+from web3 import Web3
 
-# Load environment variables from .env file
-load_dotenv()
+class SecureDataProcessor:
+    def __init__(self, config_path: str = 'config.ini'):
+        """Initialize the secure data processor with Ocean Protocol integration."""
+        load_dotenv()
+        
+        # Initialize Ocean Protocol
+        self.config = Config(config_path)
+        self.ocean = Ocean(self.config)
+        
+        # Initialize encryption key
+        self.encryption_key = os.getenv("ENCRYPTION_KEY")
+        if not self.encryption_key:
+            self.encryption_key = Fernet.generate_key()
+        self.fernet = Fernet(self.encryption_key)
+        
+        # Web3 connection for Sapphire
+        self.w3 = Web3(Web3.HTTPProvider(os.getenv("SAPPHIRE_RPC_URL")))
 
-# Global settings
-OCEAN_RPC_URL = os.getenv("OCEAN_RPC_URL")
-OCEAN_WALLET_ADDRESS = os.getenv("OCEAN_WALLET_ADDRESS")
-DATASET_DID = os.getenv("DATASET_DID")  # DID of the dataset from Ocean Protocol
+    async def process_dataset(
+        self,
+        asset_did: str,
+        transformations: Dict[str, Any],
+        encrypt_output: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Process a dataset with secure transformations and Ocean Protocol integration.
+        
+        Args:
+            asset_did: Ocean Protocol dataset DID
+            transformations: Dictionary of transformation parameters
+            encrypt_output: Whether to encrypt the processed output
+            
+        Returns:
+            Dictionary containing processed data info
+        """
+        try:
+            # Download and verify dataset
+            dataset = await self._secure_download(asset_did)
+            
+            # Apply transformations in secure environment
+            processed_data = await self._apply_transformations(dataset, transformations)
+            
+            # Generate data hash
+            data_hash = self._generate_hash(processed_data)
+            
+            # Encrypt if requested
+            if encrypt_output:
+                processed_data = self._encrypt_data(processed_data)
+            
+            # Upload to Ocean Protocol
+            new_did = await self._upload_to_ocean(processed_data, {
+                "preprocessed": True,
+                "original_did": asset_did,
+                "transformations": transformations,
+                "data_hash": data_hash
+            })
+            
+            return {
+                "status": "success",
+                "new_did": new_did,
+                "data_hash": data_hash,
+                "transformations_applied": transformations
+            }
+            
+        except Exception as e:
+            print(f"Error processing dataset: {str(e)}")
+            raise
 
-# Initialize Ocean Protocol client
-config = Config('config.ini')  # Adjust with your Ocean config file path
-ocean = Ocean(config)
+    async def _secure_download(self, asset_did: str) -> pd.DataFrame:
+        """Securely download and verify dataset from Ocean Protocol."""
+        try:
+            # Resolve asset
+            asset = self.ocean.assets.resolve(asset_did)
+            if not asset:
+                raise ValueError(f"Asset not found: {asset_did}")
 
+            # Get download service
+            service = asset.get_service(ServiceTypes.ASSET_ACCESS)
+            if not service:
+                raise ValueError("No access service available")
 
-def get_dataset(asset_did):
-    """
-    Retrieve the dataset details from Ocean Protocol using its DID.
-    
-    :param asset_did: DID of the dataset stored on Ocean Protocol.
-    :return: Asset object containing dataset details.
-    """
-    asset = ocean.assets.resolve(asset_did)
-    return asset
+            # Download with integrity check
+            file_path = await self.ocean.assets.download(
+                asset,
+                service.index,
+                self.ocean.wallet,
+                destination="./temp/"
+            )
 
+            # Verify integrity
+            if not self._verify_integrity(file_path, asset.metadata):
+                raise ValueError("Data integrity check failed")
 
-def download_dataset(asset_did):
-    """
-    Download the dataset from Ocean Protocol and save it locally for preprocessing.
-    
-    :param asset_did: DID of the dataset.
-    :return: Path to the downloaded dataset file.
-    """
-    asset = get_dataset(asset_did)
-    
-    # Get the first service that supports 'access' (this is the download service)
-    access_service = None
-    for service in asset.services:
-        if service.type == 'access':
-            access_service = service
-            break
+            # Load into pandas
+            return pd.read_csv(file_path)
 
-    if not access_service:
-        raise ValueError(f"Dataset {asset_did} does not support access/download services.")
+        except Exception as e:
+            print(f"Error downloading dataset: {str(e)}")
+            raise
 
-    # Download the dataset file
-    file_url = ocean.assets.download(asset, ocean.wallet)
-    dataset_file = f"dataset_{asset_did}.csv"  # Adjust extension based on file type
-    with open(dataset_file, 'wb') as file:
-        response = requests.get(file_url)
-        file.write(response.content)
-    
-    print(f"Dataset downloaded to {dataset_file}")
-    return dataset_file
+    async def _apply_transformations(
+        self,
+        data: pd.DataFrame,
+        transformations: Dict[str, Any]
+    ) -> pd.DataFrame:
+        """Apply secure data transformations."""
+        try:
+            df = data.copy()
 
+            # Handle missing values
+            if transformations.get("handle_missing"):
+                strategy = transformations["handle_missing"].get("strategy", "drop")
+                if strategy == "drop":
+                    df = df.dropna()
+                elif strategy == "fill":
+                    fill_value = transformations["handle_missing"].get("value", 0)
+                    df = df.fillna(fill_value)
 
-def preprocess_dataset(dataset_file, transformations):
-    """
-    Preprocess the dataset by applying transformations (e.g., normalization, cleaning).
-    
-    :param dataset_file: Path to the dataset file.
-    :param transformations: Dictionary specifying preprocessing steps.
-    :return: Path to the preprocessed dataset file.
-    """
-    # Example: You can add more complex preprocessing steps based on transformations
-    with open(dataset_file, 'r') as file:
-        data = file.read()  # Reading the raw data; adjust this based on file format (e.g., CSV, JSON)
-    
-    # Apply transformations (e.g., normalization, cleaning)
-    if transformations.get('normalize'):
-        # Add normalization logic here, like Min-Max scaling
-        data = normalize_data(data)
-    
-    if transformations.get('remove_nulls'):
-        # Add logic to remove or handle missing data
-        data = remove_nulls(data)
+            # Normalization
+            if transformations.get("normalize"):
+                method = transformations["normalize"].get("method", "minmax")
+                columns = transformations["normalize"].get("columns", df.select_dtypes(include=[np.number]).columns)
+                
+                if method == "minmax":
+                    df[columns] = (df[columns] - df[columns].min()) / (df[columns].max() - df[columns].min())
+                elif method == "zscore":
+                    df[columns] = (df[columns] - df[columns].mean()) / df[columns].std()
 
-    # Save the preprocessed dataset
-    preprocessed_file = f"preprocessed_{dataset_file}"
-    with open(preprocessed_file, 'w') as file:
-        file.write(data)
+            # Feature selection
+            if transformations.get("select_features"):
+                features = transformations["select_features"]
+                df = df[features]
 
-    print(f"Dataset preprocessed and saved to {preprocessed_file}")
-    return preprocessed_file
+            # Custom transformations
+            if transformations.get("custom"):
+                df = self._apply_custom_transformations(df, transformations["custom"])
 
+            return df
 
-def normalize_data(data):
-    """
-    Normalize the dataset (placeholder function).
-    
-    :param data: Raw dataset.
-    :return: Normalized dataset.
-    """
-    # Example normalization logic
-    normalized_data = data  # Placeholder, replace with actual logic
-    print("Data normalization applied.")
-    return normalized_data
+        except Exception as e:
+            print(f"Error applying transformations: {str(e)}")
+            raise
 
+    def _apply_custom_transformations(
+        self,
+        data: pd.DataFrame,
+        custom_transforms: Dict[str, Any]
+    ) -> pd.DataFrame:
+        """Apply custom data transformations."""
+        df = data.copy()
 
-def remove_nulls(data):
-    """
-    Remove or handle missing/null data (placeholder function).
-    
-    :param data: Raw dataset.
-    :return: Dataset with nulls removed or handled.
-    """
-    # Example logic to remove nulls
-    cleaned_data = data  # Placeholder, replace with actual logic
-    print("Null values removed from data.")
-    return cleaned_data
+        for transform in custom_transforms:
+            if transform.get("type") == "categorical_encoding":
+                columns = transform.get("columns", [])
+                method = transform.get("method", "onehot")
+                
+                if method == "onehot":
+                    df = pd.get_dummies(df, columns=columns)
+                elif method == "label":
+                    for col in columns:
+                        df[col] = df[col].astype('category').cat.codes
 
+            elif transform.get("type") == "aggregation":
+                group_by = transform.get("group_by")
+                agg_func = transform.get("function", "mean")
+                df = df.groupby(group_by).agg(agg_func).reset_index()
 
-def hash_preprocessed_data(preprocessed_file):
-    """
-    Generate a cryptographic hash of the preprocessed data for integrity verification.
-    
-    :param preprocessed_file: Path to the preprocessed dataset file.
-    :return: Hash of the preprocessed data.
-    """
-    hash_md5 = hashlib.md5()
-    with open(preprocessed_file, 'rb') as file:
-        for chunk in iter(lambda: file.read(4096), b""):
-            hash_md5.update(chunk)
-    
-    data_hash = hash_md5.hexdigest()
-    print(f"Generated hash for preprocessed dataset: {data_hash}")
-    return data_hash
+        return df
 
+    def _encrypt_data(self, data: pd.DataFrame) -> bytes:
+        """Encrypt processed data using Fernet encryption."""
+        try:
+            data_bytes = data.to_json().encode()
+            return self.fernet.encrypt(data_bytes)
+        except Exception as e:
+            print(f"Error encrypting data: {str(e)}")
+            raise
 
-def upload_preprocessed_data_to_ocean(preprocessed_file):
-    """
-    Upload the preprocessed dataset to Ocean Protocol as a new asset.
-    
-    :param preprocessed_file: Path to the preprocessed dataset file.
-    :return: DID of the newly uploaded dataset.
-    """
-    metadata = {
-        "main": {
-            "name": f"Preprocessed Dataset {os.path.basename(preprocessed_file)}",
-            "type": "dataset",
-            "dateCreated": "2024-10-22T00:00:00Z",  # Replace with current date/time
-            "author": "Confidential Data Exchange",
-            "license": "CC0: Public Domain",
-        }
+    def _decrypt_data(self, encrypted_data: bytes) -> pd.DataFrame:
+        """Decrypt processed data."""
+        try:
+            decrypted_bytes = self.fernet.decrypt(encrypted_data)
+            return pd.read_json(decrypted_bytes.decode())
+        except Exception as e:
+            print(f"Error decrypting data: {str(e)}")
+            raise
+
+    def _generate_hash(self, data: pd.DataFrame) -> str:
+        """Generate secure hash of processed data."""
+        try:
+            data_bytes = data.to_json().encode()
+            return hashlib.sha3_256(data_bytes).hexdigest()
+        except Exception as e:
+            print(f"Error generating hash: {str(e)}")
+            raise
+
+    def _verify_integrity(self, file_path: str, metadata: Dict[str, Any]) -> bool:
+        """Verify data integrity using stored hash."""
+        try:
+            with open(file_path, 'rb') as f:
+                file_hash = hashlib.sha3_256(f.read()).hexdigest()
+            return file_hash == metadata.get('contentHash')
+        except Exception as e:
+            print(f"Error verifying integrity: {str(e)}")
+            raise
+
+    async def _upload_to_ocean(
+        self,
+        data: pd.DataFrame,
+        metadata: Dict[str, Any]
+    ) -> str:
+        """Upload processed data to Ocean Protocol."""
+        try:
+            # Prepare metadata
+            asset_metadata = {
+                "main": {
+                    "name": f"Processed Dataset {metadata.get('original_did')}",
+                    "type": "dataset",
+                    "description": "Processed and transformed dataset",
+                    "dateCreated": pd.Timestamp.now().isoformat(),
+                    "author": "Confidential Data Exchange",
+                    "license": "CC0: Public Domain",
+                    "preprocessed": True,
+                    "transformations": metadata.get("transformations"),
+                    "contentHash": metadata.get("data_hash")
+                }
+            }
+
+            # Save processed data temporarily
+            temp_file = "./temp/processed_data.csv"
+            data.to_csv(temp_file, index=False)
+
+            # Create asset
+            asset = await self.ocean.assets.create(
+                temp_file,
+                asset_metadata,
+                self.ocean.wallet,
+                encrypt=True
+            )
+
+            # Cleanup
+            os.remove(temp_file)
+
+            return asset.did
+
+        except Exception as e:
+            print(f"Error uploading to Ocean: {str(e)}")
+            raise
+
+# Example usage
+if __name__ == "__main__":
+    # Initialize processor
+    processor = SecureDataProcessor()
+
+    # Example transformations
+    transformations = {
+        "handle_missing": {
+            "strategy": "drop"
+        },
+        "normalize": {
+            "method": "minmax",
+            "columns": ["feature1", "feature2"]
+        },
+        "select_features": ["feature1", "feature2", "target"],
+        "custom": [
+            {
+                "type": "categorical_encoding",
+                "columns": ["category1"],
+                "method": "onehot"
+            }
+        ]
     }
 
-    # Upload the preprocessed dataset as a new asset on Ocean
-    asset = ocean.assets.create(preprocessed_file, metadata, ocean.wallet)
-    
-    if asset:
-        print(f"Preprocessed dataset uploaded with DID: {asset.did}")
-        return asset.did
-    else:
-        print("Failed to upload preprocessed dataset.")
-        return None
+    import asyncio
 
+    async def main():
+        # Process dataset
+        result = await processor.process_dataset(
+            "did:op:example",
+            transformations,
+            encrypt_output=True
+        )
+        print(f"Processing complete: {result}")
 
-if __name__ == "__main__":
-    # Example usage:
-    
-    # Step 1: Download the dataset from Ocean Protocol
-    dataset_file = download_dataset(DATASET_DID)
-    
-    # Step 2: Preprocess the dataset (example transformations: normalize, remove nulls)
-    transformations = {"normalize": True, "remove_nulls": True}
-    preprocessed_file = preprocess_dataset(dataset_file, transformations)
-    
-    # Step 3: Generate a hash of the preprocessed data for integrity verification
-    data_hash = hash_preprocessed_data(preprocessed_file)
-    
-    # Step 4: Upload the preprocessed data back to Ocean as a new asset
-    new_dataset_did = upload_preprocessed_data_to_ocean(preprocessed_file)
+    # Run the async main function
+    asyncio.run(main())

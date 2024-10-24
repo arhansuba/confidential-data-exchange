@@ -1,203 +1,350 @@
-'use client'
+import React, { useState, useEffect } from 'react';
+import { ethers } from 'ethers';
+import { useOceanCompute } from './oceanIntegration';
+import { 
+  Tabs, 
+  TabsContent, 
+  TabsList, 
+  TabsTrigger 
+} from "@/components/ui/tabs";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { useToast } from "@/hooks/use-toast";
+import { 
+  Brain,
+  Server,
+  Upload,
+  Activity,
+  Lock,
+  Database,
+  PlayCircle,
+  CheckCircle2,
+  XCircle 
+} from 'lucide-react';
 
-import React, { useState, useEffect } from 'react'
-import { ethers } from 'ethers'
-import ModelCard from './ModelCard'
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious } from "@/components/ui/pagination"
-import { useToast } from "@/components/ui/use-toast"
-import { Loader2, Search } from 'lucide-react'
+// Contract ABIs and addresses
+const MARKETPLACE_ABI = [/* Your ABI here */];
+const OCEAN_COMPUTE_ABI = [/* Your ABI here */];
+const ROFL_COMPUTE_ABI = [/* Your ABI here */];
 
-// Mock data for demonstration
-const mockModels = [
-  { id: '1', name: 'GPT-4', description: 'Advanced language model', price: '0.1', rating: 4.8, totalRatings: 120, creator: '0x1234...5678' },
-  { id: '2', name: 'DALL-E 3', description: 'Image generation model', price: '0.2', rating: 4.6, totalRatings: 85, creator: '0x2345...6789' },
-  { id: '3', name: 'Whisper', description: 'Speech recognition model', price: '0.05', rating: 4.5, totalRatings: 60, creator: '0x3456...7890' },
-  { id: '4', name: 'Stable Diffusion', description: 'Text-to-image model', price: '0.15', rating: 4.7, totalRatings: 95, creator: '0x4567...8901' },
-  { id: '5', name: 'AlphaFold', description: 'Protein structure prediction', price: '0.25', rating: 4.9, totalRatings: 110, creator: '0x5678...9012' },
-  { id: '6', name: 'BERT', description: 'NLP model for various tasks', price: '0.08', rating: 4.4, totalRatings: 75, creator: '0x6789...0123' },
-]
+const MARKETPLACE_ADDRESS = "YOUR_MARKETPLACE_ADDRESS";
+const OCEAN_COMPUTE_ADDRESS = "YOUR_OCEAN_COMPUTE_ADDRESS";
+const ROFL_COMPUTE_ADDRESS = "YOUR_ROFL_COMPUTE_ADDRESS";
 
-interface Model {
-  id: string
-  name: string
-  description: string
-  price: string
-  rating: number
-  totalRatings: number
-  creator: string
-}
+export default function MarketplaceDashboard() {
+  // State for different components
+  const [models, setModels] = useState([]);
+  const [computeJobs, setComputeJobs] = useState([]);
+  const [selectedModel, setSelectedModel] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [computeLoading, setComputeLoading] = useState(false);
+  
+  // Contract instances
+  const [contracts, setContracts] = useState({
+    marketplace: null,
+    oceanCompute: null,
+    roflCompute: null
+  });
 
-export default function Marketplace() {
-  const [models, setModels] = useState<Model[]>([])
-  const [filteredModels, setFilteredModels] = useState<Model[]>([])
-  const [isLoading, setIsLoading] = useState(true)
-  const [searchTerm, setSearchTerm] = useState('')
-  const [sortBy, setSortBy] = useState('rating')
-  const [currentPage, setCurrentPage] = useState(1)
-  const modelsPerPage = 6
+  // Ocean Protocol integration
+  const { startCompute, checkStatus, getAllowance } = useOceanCompute(
+    window.ethereum,
+    OCEAN_COMPUTE_ADDRESS,
+    "YOUR_OCEAN_PROVIDER_URL"
+  );
 
-  const { toast } = useToast()
+  const { toast } = useToast();
 
+  // Initialize contracts
   useEffect(() => {
-    // Simulating API call to fetch models
-    const fetchModels = async () => {
-      try {
-        // In a real application, you would fetch data from your API or smart contract here
-        await new Promise(resolve => setTimeout(resolve, 1000)) // Simulating network delay
-        setModels(mockModels)
-        setFilteredModels(mockModels)
-      } catch (error) {
-        console.error('Error fetching models:', error)
-        toast({
-          title: "Error",
-          description: "Failed to load models. Please try again later.",
-          variant: "destructive",
-        })
-      } finally {
-        setIsLoading(false)
+    const initContracts = async () => {
+      if (typeof window.ethereum !== 'undefined') {
+        try {
+          await window.ethereum.request({ method: 'eth_requestAccounts' });
+          const provider = new ethers.providers.Web3Provider(window.ethereum);
+          const signer = provider.getSigner();
+
+          setContracts({
+            marketplace: new ethers.Contract(
+              MARKETPLACE_ADDRESS,
+              MARKETPLACE_ABI,
+              signer
+            ),
+            oceanCompute: new ethers.Contract(
+              OCEAN_COMPUTE_ADDRESS,
+              OCEAN_COMPUTE_ABI,
+              signer
+            ),
+            roflCompute: new ethers.Contract(
+              ROFL_COMPUTE_ADDRESS,
+              ROFL_COMPUTE_ABI,
+              signer
+            )
+          });
+
+          await loadModels();
+          await loadComputeJobs();
+        } catch (error) {
+          toast({
+            title: "Connection Error",
+            description: error.message,
+            variant: "destructive"
+          });
+        }
       }
-    }
+    };
 
-    fetchModels()
-  }, [toast])
+    initContracts();
+  }, []);
 
-  useEffect(() => {
-    const filtered = models.filter(model =>
-      model.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      model.description.toLowerCase().includes(searchTerm.toLowerCase())
-    )
-    const sorted = filtered.sort((a, b) => {
-      if (sortBy === 'rating') return b.rating - a.rating
-      if (sortBy === 'price') return parseFloat(a.price) - parseFloat(b.price)
-      return 0
-    })
-    setFilteredModels(sorted)
-    setCurrentPage(1)
-  }, [searchTerm, sortBy, models])
-
-  const handlePurchase = async (id: string) => {
-    setIsLoading(true)
+  // Load models from marketplace
+  const loadModels = async () => {
+    if (!contracts.marketplace) return;
+    
     try {
-      // Simulating blockchain interaction
-      await new Promise(resolve => setTimeout(resolve, 2000))
-      
-      // Here you would typically:
-      // 1. Connect to the user's wallet (e.g., MetaMask)
-      // 2. Call your smart contract's purchase function
-      // 3. Wait for the transaction to be mined
-      // 4. Update the UI based on the transaction result
+      setLoading(true);
+      const modelCount = await contracts.marketplace.getModelCount();
+      const modelPromises = [];
 
-      toast({
-        title: "Purchase Successful",
-        description: `You have successfully purchased the model with ID: ${id}`,
-      })
+      for (let i = 0; i < modelCount; i++) {
+        modelPromises.push(contracts.marketplace.getModel(i));
+      }
+
+      const loadedModels = await Promise.all(modelPromises);
+      setModels(loadedModels.map(model => ({
+        ...model,
+        decryptedMetadata: null // Will be decrypted if user has access
+      })));
     } catch (error) {
-      console.error('Purchase failed:', error)
       toast({
-        title: "Purchase Failed",
-        description: "There was an error processing your purchase. Please try again.",
-        variant: "destructive",
-      })
+        title: "Error Loading Models",
+        description: error.message,
+        variant: "destructive"
+      });
     } finally {
-      setIsLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
-  const indexOfLastModel = currentPage * modelsPerPage
-  const indexOfFirstModel = indexOfLastModel - modelsPerPage
-  const currentModels = filteredModels.slice(indexOfFirstModel, indexOfLastModel)
-  const totalPages = Math.ceil(filteredModels.length / modelsPerPage)
+  // Start compute job
+  const startComputeJob = async (modelId, params) => {
+    try {
+      setComputeLoading(true);
+      
+      // Check compute allowance
+      const allowance = await getAllowance(
+        contracts.oceanCompute.address,
+        await window.ethereum.request({ method: 'eth_accounts' })[0]
+      );
+
+      if (allowance <= 0) {
+        throw new Error("Insufficient compute allowance");
+      }
+
+      // Start Ocean compute job
+      const oceanJobId = await startCompute(
+        models[modelId].oceanDataToken,
+        models[modelId].algorithmToken,
+        params
+      );
+
+      // Create ROFL compute task
+      const tx = await contracts.roflCompute.requestComputation(
+        modelId,
+        ethers.utils.toUtf8Bytes(JSON.stringify(params)),
+        ethers.utils.toUtf8Bytes(JSON.stringify({ oceanJobId }))
+      );
+      await tx.wait();
+
+      toast({
+        title: "Compute Job Started",
+        description: "Your computation request is being processed",
+      });
+
+      await loadComputeJobs();
+    } catch (error) {
+      toast({
+        title: "Compute Error",
+        description: error.message,
+        variant: "destructive"
+      });
+    } finally {
+      setComputeLoading(false);
+    }
+  };
 
   return (
-    <div className="container mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-8">AI Model Marketplace</h1>
-      
-      <Card className="mb-8">
-        <CardHeader>
-          <CardTitle>Search and Filter</CardTitle>
-          <CardDescription>Find the perfect AI model for your needs</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-col sm:flex-row gap-4">
-            <div className="relative flex-grow">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input
-                type="search"
-                placeholder="Search models..."
-                className="pl-8"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
-            </div>
-            <Select value={sortBy} onValueChange={setSortBy}>
-              <SelectTrigger className="w-full sm:w-[180px]">
-                <SelectValue placeholder="Sort by" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="rating">Highest Rated</SelectItem>
-                <SelectItem value="price">Lowest Price</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </CardContent>
-      </Card>
+    <div className="container mx-auto p-6">
+      <Tabs defaultValue="models" className="space-y-6">
+        <TabsList>
+          <TabsTrigger value="models">
+            <Brain className="mr-2 h-4 w-4" />
+            Models
+          </TabsTrigger>
+          <TabsTrigger value="compute">
+            <Server className="mr-2 h-4 w-4" />
+            Compute Jobs
+          </TabsTrigger>
+          <TabsTrigger value="data">
+            <Database className="mr-2 h-4 w-4" />
+            My Data
+          </TabsTrigger>
+        </TabsList>
 
-      {isLoading ? (
-        <div className="flex justify-center items-center h-64">
-          <Loader2 className="h-8 w-8 animate-spin" />
-        </div>
-      ) : (
-        <>
+        <TabsContent value="models" className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {currentModels.map((model) => (
-              <ModelCard
-                key={model.id}
-                id={model.id}
-                name={model.name}
-                description={model.description}
-                price={model.price}
-                rating={model.rating}
-                totalRatings={model.totalRatings}
-                creator={model.creator}
-                onPurchase={handlePurchase}
-              />
+            {models.map((model, index) => (
+              <Card key={index} className="hover:shadow-lg transition-shadow">
+                <CardHeader>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <CardTitle>{model.name}</CardTitle>
+                      <CardDescription>{model.description}</CardDescription>
+                    </div>
+                    {model.hasComputeService && (
+                      <Badge variant="secondary">
+                        Compute Enabled
+                      </Badge>
+                    )}
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2">
+                      <Activity className="h-4 w-4 text-gray-500" />
+                      <span className="text-sm text-gray-500">
+                        Compute Jobs: {model.computeCount}
+                      </span>
+                    </div>
+                    
+                    <div className="flex items-center gap-2">
+                      <Lock className="h-4 w-4 text-gray-500" />
+                      <span className="text-sm text-gray-500">
+                        Access Type: {model.accessType}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between items-center">
+                      <span className="text-2xl font-bold">
+                        {ethers.utils.formatEther(model.price)} ETH
+                      </span>
+                      <Button 
+                        onClick={() => handleModelSelect(model)}
+                        variant="default"
+                      >
+                        {model.hasAccess ? "Start Compute" : "Purchase Access"}
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
             ))}
           </div>
+        </TabsContent>
 
-          {filteredModels.length > modelsPerPage && (
-            <Pagination className="mt-8">
-              <PaginationContent>
-                <PaginationItem>
-                  <PaginationPrevious
-                    onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                    disabled={currentPage === 1}
-                  />
-                </PaginationItem>
-                {[...Array(totalPages)].map((_, index) => (
-                  <PaginationItem key={index}>
-                    <PaginationLink
-                      onClick={() => setCurrentPage(index + 1)}
-                      isActive={currentPage === index + 1}
+        <TabsContent value="compute" className="space-y-6">
+          <div className="grid grid-cols-1 gap-4">
+            {computeJobs.map((job, index) => (
+              <Card key={index}>
+                <CardContent className="pt-6">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                      {job.status === 'completed' ? (
+                        <CheckCircle2 className="h-6 w-6 text-green-500" />
+                      ) : job.status === 'failed' ? (
+                        <XCircle className="h-6 w-6 text-red-500" />
+                      ) : (
+                        <PlayCircle className="h-6 w-6 text-blue-500" />
+                      )}
+                      <div>
+                        <h3 className="font-medium">
+                          Compute Job #{job.id}
+                        </h3>
+                        <p className="text-sm text-gray-500">
+                          Model: {job.modelName}
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <div className="text-right">
+                      <p className="font-medium capitalize">
+                        {job.status}
+                      </p>
+                      <p className="text-sm text-gray-500">
+                        Started: {new Date(job.timestamp * 1000).toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+
+                  {job.status === 'processing' && (
+                    <Progress 
+                      value={job.progress} 
+                      className="mt-4"
+                    />
+                  )}
+
+                  {job.status === 'completed' && (
+                    <Button 
+                      className="mt-4"
+                      onClick={() => downloadResults(job.id)}
                     >
-                      {index + 1}
-                    </PaginationLink>
-                  </PaginationItem>
-                ))}
-                <PaginationItem>
-                  <PaginationNext
-                    onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-                    disabled={currentPage === totalPages}
-                  />
-                </PaginationItem>
-              </PaginationContent>
-            </Pagination>
-          )}
-        </>
-      )}
+                      Download Results
+                    </Button>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </TabsContent>
+
+        <TabsContent value="data" className="space-y-6">
+          {/* Data management interface */}
+        </TabsContent>
+      </Tabs>
+
+      {/* Model Selection Dialog */}
+      <AlertDialog open={!!selectedModel}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {selectedModel?.hasAccess ? "Start Compute Job" : "Purchase Access"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {selectedModel?.hasAccess 
+                ? "Configure your compute job parameters"
+                : "Purchase access to use this model"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          
+          {/* Dialog content based on access status */}
+
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setSelectedModel(null)}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={() => handleModelAction(selectedModel)}>
+              {selectedModel?.hasAccess ? "Start Compute" : "Purchase"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
-  )
+  );
 }

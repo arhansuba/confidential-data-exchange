@@ -1,85 +1,138 @@
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Counters.sol";
+import "@oasisprotocol/sapphire-hardhat/contracts/Sapphire.sol";
 
-contract ConfidentialAIModel is ERC721URIStorage, Ownable, ReentrancyGuard {
-    using Counters for Counters.Counter;
-    
-    Counters.Counter private _tokenIds;
+/**
+ * @title ConfidentialAIModel
+ * @notice Enables secure exchange of AI models with encrypted metadata and access control
+ */
+contract ConfidentialAIModel {
+    struct Model {
+        address owner;
+        bytes32 modelHash;
+        bytes encryptedMetadata;
+        bytes32 accessKeyHash;
+        uint256 price;
+        bool isActive;
+    }
 
-    // Mapping from token ID to encrypted AI model URI (Confidential Data URI)
-    mapping(uint256 => string) private _encryptedModels;
+    // Mapping from model ID to Model struct
+    mapping(uint256 => Model) private models;
+    // Mapping from model ID to user address to access key
+    mapping(uint256 => mapping(address => bytes)) private accessKeys;
+    uint256 private nextModelId;
 
-    // Event emitted when a new AI model is minted
-    event ModelTokenized(uint256 indexed tokenId, address indexed owner, string tokenURI);
+    event ModelListed(uint256 indexed modelId, address indexed owner, uint256 price);
+    event ModelPurchased(uint256 indexed modelId, address indexed buyer);
+    event ModelAccessGranted(uint256 indexed modelId, address indexed user);
 
-    // Event emitted when an AI model is purchased
-    event ModelPurchased(uint256 indexed tokenId, address indexed buyer);
-
-    constructor() ERC721("ConfidentialAIModel", "CAIM") {}
-
-    /**
-     * @dev Tokenize an AI model or dataset.
-     * @param modelURI The metadata URI (off-chain) of the model.
-     * @param encryptedModelURI The URI of the encrypted AI model or dataset (off-chain storage).
-     * @return tokenId The ID of the tokenized AI model.
-     */
-    function tokenizeModel(string memory modelURI, string memory encryptedModelURI)
-        external
-        onlyOwner
-        returns (uint256 tokenId)
-    {
-        _tokenIds.increment();
-        tokenId = _tokenIds.current();
-
-        _mint(msg.sender, tokenId);  // Mint NFT to the owner
-        _setTokenURI(tokenId, modelURI);  // Set metadata URI (e.g., description, creator info)
-        _encryptedModels[tokenId] = encryptedModelURI;  // Store encrypted model data
-
-        emit ModelTokenized(tokenId, msg.sender, modelURI);
+    constructor() {
+        nextModelId = 1;
     }
 
     /**
-     * @dev Purchase an AI model by transferring the NFT.
-     * @param tokenId The ID of the tokenized AI model to purchase.
+     * @notice List a new AI model with encrypted metadata
+     * @param modelHash Hash of the model file
+     * @param encryptedMetadata Encrypted model metadata (description, architecture, etc.)
+     * @param accessKeyHash Hash of the access key for the model
+     * @param price Price in native tokens
      */
-    function purchaseModel(uint256 tokenId) external payable nonReentrant {
-        address owner = ownerOf(tokenId);
+    function listModel(
+        bytes32 modelHash,
+        bytes calldata encryptedMetadata,
+        bytes32 accessKeyHash,
+        uint256 price
+    ) external {
+        // Generate random nonce for encryption
+        bytes memory nonce = Sapphire.randomBytes(32, "model_listing");
+        
+        // Create new model entry
+        models[nextModelId] = Model({
+            owner: msg.sender,
+            modelHash: modelHash,
+            encryptedMetadata: encryptedMetadata,
+            accessKeyHash: accessKeyHash,
+            price: price,
+            isActive: true
+        });
 
-        require(msg.sender != owner, "Cannot purchase your own model");
-        require(msg.value > 0, "Payment required to purchase model");
-
-        // Transfer NFT to buyer and transfer payment to the owner
-        _transfer(owner, msg.sender, tokenId);
-        payable(owner).transfer(msg.value);
-
-        emit ModelPurchased(tokenId, msg.sender);
+        emit ModelListed(nextModelId, msg.sender, price);
+        nextModelId++;
     }
 
     /**
-     * @dev Retrieve the encrypted AI model URI for a token ID.
-     * Only the token owner can access the encrypted model.
-     * @param tokenId The ID of the tokenized AI model.
-     * @return The encrypted AI model URI (e.g., IPFS link).
+     * @notice Purchase access to a model
+     * @param modelId ID of the model to purchase
      */
-    function getEncryptedModel(uint256 tokenId) external view returns (string memory) {
-        require(_exists(tokenId), "Token does not exist");
-        require(ownerOf(tokenId) == msg.sender, "You do not own this token");
+    function purchaseModel(uint256 modelId) external payable {
+        Model storage model = models[modelId];
+        require(model.isActive, "Model not available");
+        require(msg.value >= model.price, "Insufficient payment");
+        require(accessKeys[modelId][msg.sender].length == 0, "Already purchased");
 
-        return _encryptedModels[tokenId];  // Return the encrypted model URI
+        // Transfer payment to model owner
+        payable(model.owner).transfer(msg.value);
+
+        emit ModelPurchased(modelId, msg.sender);
     }
 
     /**
-     * @dev Withdraw contract funds (in case of accumulated payments).
+     * @notice Grant access to a purchased model
+     * @param modelId ID of the model
+     * @param buyer Address of the buyer
+     * @param encryptedAccessKey Encrypted access key for the buyer
      */
-    function withdraw() external onlyOwner {
-        uint256 balance = address(this).balance;
-        require(balance > 0, "No funds to withdraw");
+    function grantAccess(
+        uint256 modelId,
+        address buyer,
+        bytes calldata encryptedAccessKey
+    ) external {
+        Model storage model = models[modelId];
+        require(msg.sender == model.owner, "Not model owner");
+        require(accessKeys[modelId][buyer].length == 0, "Access already granted");
 
-        payable(owner()).transfer(balance);
+        // Store encrypted access key for the buyer
+        accessKeys[modelId][buyer] = encryptedAccessKey;
+
+        emit ModelAccessGranted(modelId, buyer);
+    }
+
+    /**
+     * @notice Get encrypted access key for a purchased model
+     * @param modelId ID of the model
+     * @return encryptedKey Encrypted access key
+     */
+    function getAccessKey(uint256 modelId) external view returns (bytes memory) {
+        require(accessKeys[modelId][msg.sender].length > 0, "No access");
+        return accessKeys[modelId][msg.sender];
+    }
+
+    /**
+     * @notice Get model details
+     * @param modelId ID of the model
+     * @return Model struct containing model details
+     */
+    function getModel(uint256 modelId) external view returns (Model memory) {
+        return models[modelId];
+    }
+
+    /**
+     * @notice Update model price
+     * @param modelId ID of the model
+     * @param newPrice New price in native tokens
+     */
+    function updatePrice(uint256 modelId, uint256 newPrice) external {
+        require(models[modelId].owner == msg.sender, "Not model owner");
+        models[modelId].price = newPrice;
+    }
+
+    /**
+     * @notice Deactivate model listing
+     * @param modelId ID of the model
+     */
+    function deactivateModel(uint256 modelId) external {
+        require(models[modelId].owner == msg.sender, "Not model owner");
+        models[modelId].isActive = false;
     }
 }

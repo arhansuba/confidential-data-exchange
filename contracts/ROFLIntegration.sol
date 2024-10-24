@@ -1,113 +1,227 @@
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@oasisprotocol/sapphire-hardhat/contracts/Sapphire.sol";
 
-contract ROFLIntegration is Ownable, ReentrancyGuard {
-    // Struct to store the details of each off-chain computation request
-    struct OffchainComputationRequest {
-        uint256 requestId;
-        uint256 tokenId;  // NFT ID for the AI model
+/**
+ * @title ROFLIntegration
+ * @notice Handles secure off-chain computations for AI model evaluation and data processing
+ * @dev Integrates with Oasis ROFL framework for Trusted Execution Environment computations
+ */
+contract ROFLIntegration {
+    using Sapphire for *;
+
+    struct ComputationRequest {
+        uint256 modelId;
+        bytes encryptedInput;
+        bytes encryptedConfig;
         address requester;
-        string inputDataHash;  // Hash of the input data (for verification)
-        string resultHash;  // Hash of the computed result (to be provided later)
-        bool completed;
+        uint256 timestamp;
+        bytes32 resultHash;
+        ComputationStatus status;
     }
 
-    // Mapping to store off-chain computation requests
-    mapping(uint256 => OffchainComputationRequest) public requests;
+    struct ComputeNode {
+        address nodeAddress;
+        bytes publicKey;
+        bool isActive;
+        uint256 totalComputations;
+        uint256 reputation;
+    }
 
-    // Counter for generating unique request IDs
-    uint256 private requestCounter;
+    enum ComputationStatus {
+        Pending,
+        Processing,
+        Completed,
+        Failed
+    }
 
-    // Event emitted when an off-chain computation request is initiated
+    // State variables
+    mapping(uint256 => ComputationRequest) private computationRequests;
+    mapping(address => ComputeNode) private computeNodes;
+    mapping(uint256 => mapping(address => bool)) private computePermissions;
+    
+    uint256 private nextRequestId;
+    address private immutable owner;
+    
+    // Events
     event ComputationRequested(
         uint256 indexed requestId,
-        uint256 indexed tokenId,
-        address indexed requester,
-        string inputDataHash
+        uint256 indexed modelId,
+        address indexed requester
     );
-
-    // Event emitted when an off-chain computation is completed and results are verified
     event ComputationCompleted(
         uint256 indexed requestId,
-        uint256 indexed tokenId,
-        string resultHash,
-        bool success
+        bytes32 resultHash
+    );
+    event ComputeNodeRegistered(
+        address indexed nodeAddress,
+        bytes publicKey
+    );
+    event ComputeNodeStatusUpdated(
+        address indexed nodeAddress,
+        bool isActive
     );
 
+    // Modifiers
+    modifier onlyOwner() {
+        require(msg.sender == owner, "ROFLIntegration: caller is not owner");
+        _;
+    }
+
+    modifier onlyActiveNode() {
+        require(computeNodes[msg.sender].isActive, "ROFLIntegration: not an active compute node");
+        _;
+    }
+
     constructor() {
-        requestCounter = 1;  // Start request IDs from 1
+        owner = msg.sender;
+        nextRequestId = 1;
     }
 
     /**
-     * @dev Request an off-chain computation for an AI model or dataset.
-     * @param tokenId The NFT ID representing the AI model/dataset.
-     * @param inputDataHash The hash of the input data for verification purposes.
-     * @return requestId The ID of the off-chain computation request.
+     * @notice Register a new compute node with its public key
+     * @param publicKey Node's public key for secure communication
      */
-    function requestComputation(uint256 tokenId, string memory inputDataHash)
-        external
-        returns (uint256 requestId)
-    {
-        requestId = requestCounter;
-        requestCounter++;
+    function registerComputeNode(bytes calldata publicKey) external {
+        require(!computeNodes[msg.sender].isActive, "ROFLIntegration: node already registered");
+        
+        // Verify key format
+        require(publicKey.length == 32, "ROFLIntegration: invalid public key length");
+        
+        ComputeNode storage node = computeNodes[msg.sender];
+        node.nodeAddress = msg.sender;
+        node.publicKey = publicKey;
+        node.isActive = true;
+        node.totalComputations = 0;
+        node.reputation = 100; // Initial reputation score
 
-        // Create a new off-chain computation request
-        requests[requestId] = OffchainComputationRequest({
-            requestId: requestId,
-            tokenId: tokenId,
-            requester: msg.sender,
-            inputDataHash: inputDataHash,
-            resultHash: "",
-            completed: false
-        });
-
-        emit ComputationRequested(requestId, tokenId, msg.sender, inputDataHash);
-
-        // Logic to initiate the ROFL off-chain computation (off-chain process)
-        // ROFL API/Service Call to process the request
+        emit ComputeNodeRegistered(msg.sender, publicKey);
     }
 
     /**
-     * @dev Submit the result of the off-chain computation and verify it on-chain.
-     * @param requestId The ID of the off-chain computation request.
-     * @param resultHash The hash of the computed result.
-     * @return success Whether the verification succeeded.
+     * @notice Request off-chain computation for an AI model
+     * @param modelId ID of the AI model to use
+     * @param encryptedInput Encrypted input data
+     * @param encryptedConfig Encrypted computation configuration
+     * @return requestId Unique identifier for the computation request
      */
-    function submitComputationResult(uint256 requestId, string memory resultHash)
-        external
-        onlyOwner
-        nonReentrant
-        returns (bool success)
-    {
-        OffchainComputationRequest storage request = requests[requestId];
-        require(request.requestId == requestId, "Invalid request ID");
-        require(!request.completed, "Computation already completed");
+    function requestComputation(
+        uint256 modelId,
+        bytes calldata encryptedInput,
+        bytes calldata encryptedConfig
+    ) external returns (uint256) {
+        require(computePermissions[modelId][msg.sender], "ROFLIntegration: no computation permission");
 
-        // Store the result hash
+        // Generate unique nonce for request
+        bytes memory nonce = Sapphire.randomBytes(32, abi.encodePacked("compute_request", nextRequestId));
+        
+        ComputationRequest storage request = computationRequests[nextRequestId];
+        request.modelId = modelId;
+        request.encryptedInput = encryptedInput;
+        request.encryptedConfig = encryptedConfig;
+        request.requester = msg.sender;
+        request.timestamp = block.timestamp;
+        request.status = ComputationStatus.Pending;
+
+        emit ComputationRequested(nextRequestId, modelId, msg.sender);
+        
+        uint256 requestId = nextRequestId;
+        nextRequestId++;
+        return requestId;
+    }
+
+    /**
+     * @notice Submit computation result from TEE
+     * @param requestId ID of the computation request
+     * @param resultHash Hash of the encrypted result
+     * @param proof TEE attestation proof
+     */
+    function submitComputationResult(
+        uint256 requestId,
+        bytes32 resultHash,
+        bytes calldata proof
+    ) external onlyActiveNode {
+        ComputationRequest storage request = computationRequests[requestId];
+        require(request.status == ComputationStatus.Processing, "ROFLIntegration: invalid request status");
+        
+        // Verify TEE attestation proof
+        require(verifyTEEProof(proof), "ROFLIntegration: invalid TEE proof");
+
         request.resultHash = resultHash;
-        request.completed = true;
-
-        emit ComputationCompleted(requestId, request.tokenId, resultHash, true);
-
-        // Logic to verify the result (this can include ROFL off-chain verification)
-        // This function would also provide the on-chain verification of the off-chain computation.
-
-        return true;
+        request.status = ComputationStatus.Completed;
+        
+        // Update node statistics
+        ComputeNode storage node = computeNodes[msg.sender];
+        node.totalComputations++;
+        
+        emit ComputationCompleted(requestId, resultHash);
     }
 
     /**
-     * @dev Retrieve the details of a specific computation request.
-     * @param requestId The ID of the off-chain computation request.
-     * @return The details of the computation request.
+     * @notice Grant computation permission for a model
+     * @param modelId ID of the AI model
+     * @param user Address to grant permission to
      */
-    function getComputationRequest(uint256 requestId)
-        external
-        view
-        returns (OffchainComputationRequest memory)
-    {
-        return requests[requestId];
+    function grantComputePermission(uint256 modelId, address user) external {
+        require(msg.sender == owner, "ROFLIntegration: not authorized");
+        computePermissions[modelId][user] = true;
+    }
+
+    /**
+     * @notice Update compute node status
+     * @param nodeAddress Address of the compute node
+     * @param isActive New active status
+     */
+    function updateNodeStatus(address nodeAddress, bool isActive) external onlyOwner {
+        require(computeNodes[nodeAddress].nodeAddress != address(0), "ROFLIntegration: node not registered");
+        
+        computeNodes[nodeAddress].isActive = isActive;
+        emit ComputeNodeStatusUpdated(nodeAddress, isActive);
+    }
+
+    /**
+     * @notice Get computation request details
+     * @param requestId ID of the computation request
+     * @return ComputationRequest struct containing request details
+     */
+    function getComputationRequest(uint256 requestId) external view returns (ComputationRequest memory) {
+        return computationRequests[requestId];
+    }
+
+    /**
+     * @notice Get compute node details
+     * @param nodeAddress Address of the compute node
+     * @return ComputeNode struct containing node details
+     */
+    function getComputeNode(address nodeAddress) external view returns (ComputeNode memory) {
+        return computeNodes[nodeAddress];
+    }
+
+    /**
+     * @notice Verify TEE attestation proof
+     * @param proof Attestation proof from the TEE
+     * @return bool indicating if the proof is valid
+     */
+    function verifyTEEProof(bytes calldata proof) internal pure returns (bool) {
+        // Implement TEE proof verification logic
+        // This would typically involve checking the attestation signature
+        // and verifying the TEE measurements
+        return proof.length > 0; // Placeholder implementation
+    }
+
+    /**
+     * @notice Update node reputation based on computation performance
+     * @param nodeAddress Address of the compute node
+     * @param performanceScore Score based on computation performance (0-100)
+     */
+    function updateNodeReputation(address nodeAddress, uint256 performanceScore) external onlyOwner {
+        require(performanceScore <= 100, "ROFLIntegration: invalid performance score");
+        
+        ComputeNode storage node = computeNodes[nodeAddress];
+        require(node.isActive, "ROFLIntegration: node not active");
+        
+        // Update reputation with weighted average
+        node.reputation = (node.reputation * 7 + performanceScore * 3) / 10;
     }
 }

@@ -1,172 +1,293 @@
-# offchain/model_evaluation.py
 
-import os
-import json
-import web3
-import requests
-from ocean_lib.ocean.ocean import Ocean
-from ocean_lib.config import Config
-from ocean_lib.services.service import Service
-from ocean_lib.assets.asset import Asset
-from ocean_lib.models.compute_input import ComputeInput
-from web3 import Web3
-
-# Load environment variables from .env file
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Global settings
-PRIVATE_KEY = os.getenv("PRIVATE_KEY")
-OCEAN_RPC_URL = os.getenv("OCEAN_RPC_URL")
-OCEAN_WALLET_ADDRESS = os.getenv("OCEAN_WALLET_ADDRESS")
-SAPPHIRE_RPC_URL = os.getenv("SAPPHIRE_RPC_URL")
-MODEL_TOKEN_ID = os.getenv("MODEL_TOKEN_ID")  # Tokenized representation of the model on-chain
-
-# Initialize Web3
-w3 = Web3(Web3.HTTPProvider(SAPPHIRE_RPC_URL))
-
-# Initialize Ocean Protocol client
-config = Config('config.ini')  # Adjust with your Ocean config file path
-ocean = Ocean(config)
-
-
-def get_ocean_asset(asset_did):
-    """
-    Retrieve the asset details from Ocean Protocol using its DID.
-    """
-    asset = ocean.assets.resolve(asset_did)
-    return asset
-
-
-def evaluate_model(asset_did, model_params):
-    """
-    This function triggers an off-chain evaluation of an AI model using Ocean's compute-to-data.
-    The model_params argument can contain specific hyperparameters or dataset information.
-    
-    :param asset_did: The DID of the dataset or model asset stored on Ocean Protocol.
-    :param model_params: Hyperparameters or other configuration options for the model evaluation.
-    :return: Evaluation results or status.
-    """
-    asset = get_ocean_asset(asset_did)
-
-    # Ensure the asset supports compute-to-data services
-    service = None
-    for serv in asset.services:
-        if serv.type == 'compute':
-            service = serv
-            break
-
-    if not service:
-        raise ValueError(f"Asset {asset_did} does not support compute-to-data.")
-
-    # Create a compute input object
-    compute_input = ComputeInput(asset, service)
-
-    # Set up model training/evaluation parameters
-    job_id = ocean.compute.start(
-        dataset=compute_input,
-        consumer_wallet=ocean.wallet, 
-        algorithm_did=None,  # Add if you have an algorithm to execute
-        algorithm_meta=model_params  # Pass any model params if needed
-    )
-
-    print(f"Started compute job with ID: {job_id}")
-    return job_id
-
-
-def check_compute_job_status(job_id):
-    """
-    Check the status of a compute-to-data job on Ocean Protocol.
-    :param job_id: The ID of the compute job.
-    :return: The status of the job.
-    """
-    status = ocean.compute.status(ocean.assets.resolve(MODEL_TOKEN_ID), job_id, ocean.wallet)
-    return status
-
-
-def fetch_compute_result(job_id, result_index=0):
-    """
-    Fetch the result of a completed compute-to-data job.
-    :param job_id: The ID of the compute job.
-    :param result_index: Index of the result file (if multiple results are generated).
-    :return: Path to the result file.
-    """
-    compute_result = ocean.compute.result(ocean.assets.resolve(MODEL_TOKEN_ID), job_id, result_index, ocean.wallet)
-    
-    if compute_result:
-        result_url = compute_result[0]['url']
-        response = requests.get(result_url)
-        result_file = f"model_result_{job_id}.json"
+class AdvancedModelEvaluator:
+    def __init__(self, rofl_config: Dict[str, Any]):
+        """
+        Initialize evaluator with ROFL verification and advanced metrics.
         
-        with open(result_file, 'wb') as file:
-            file.write(response.content)
+        Args:
+            rofl_config: Configuration for ROFL verification settings
+        """
+        self.metrics_registry = {
+            'classification': self._get_classification_metrics(),
+            'regression': self._get_regression_metrics(),
+            'ranking': self._get_ranking_metrics(),
+            'clustering': self._get_clustering_metrics(),
+            'robustness': self._get_robustness_metrics()
+        }
+        
+        self.rofl_verifier = ROFLVerificationSystem(rofl_config)
+        self.compute_manager = DistributedComputeManager()
 
-        print(f"Results downloaded to {result_file}")
-        return result_file
-    else:
-        print(f"No results found for job {job_id}")
-        return None
+    async def evaluate_model(
+        self,
+        model_asset: Asset,
+        eval_dataset: Asset,
+        eval_config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Evaluate model with comprehensive metrics and ROFL verification.
+        """
+        try:
+            # Start distributed evaluation
+            eval_jobs = await self.compute_manager.start_distributed_eval(
+                model_asset,
+                eval_dataset,
+                eval_config
+            )
 
+            # Collect and verify results
+            results = await self._collect_verify_results(eval_jobs)
 
-def report_result_on_chain(job_id, result_file):
-    """
-    Report the result of a compute job back to the on-chain system via ROFL.
-    :param job_id: ID of the compute job.
-    :param result_file: Path to the result file.
-    :return: On-chain transaction hash.
-    """
-    # Read the result file
-    with open(result_file, 'r') as file:
-        result_data = json.load(file)
+            # Calculate comprehensive metrics
+            metrics = await self._calculate_metrics(results, eval_config['metric_types'])
 
-    # Generate the result hash to be sent to the smart contract
-    result_hash = w3.keccak(text=str(result_data))
+            # Perform ROFL verification
+            verification = await self.rofl_verifier.verify_computation(
+                eval_jobs,
+                results,
+                metrics
+            )
 
-    # Assuming we have a deployed smart contract for model evaluation on Sapphire
-    contract_address = os.getenv("MODEL_CONTRACT_ADDRESS")
-    abi = json.loads(os.getenv("MODEL_CONTRACT_ABI"))
+            return {
+                'metrics': metrics,
+                'verification': verification,
+                'confidence_score': self._calculate_confidence(metrics, verification)
+            }
 
-    contract = w3.eth.contract(address=contract_address, abi=abi)
-    nonce = w3.eth.getTransactionCount(OCEAN_WALLET_ADDRESS)
+        except Exception as e:
+            print(f"Evaluation failed: {str(e)}")
+            raise
 
-    # Prepare the transaction
-    tx = contract.functions.submitEvaluationResult(job_id, result_hash).buildTransaction({
-        'nonce': nonce,
-        'gas': 3000000,
-        'gasPrice': w3.toWei('20', 'gwei'),
-        'from': OCEAN_WALLET_ADDRESS
-    })
+    def _get_classification_metrics(self) -> Dict[str, Callable]:
+        """Advanced classification metrics."""
+        return {
+            'accuracy': self._calculate_accuracy,
+            'precision': self._calculate_precision,
+            'recall': self._calculate_recall,
+            'f1_score': self._calculate_f1,
+            'auc_roc': self._calculate_auc_roc,
+            'auc_pr': self._calculate_auc_pr,
+            'confusion_matrix': self._calculate_confusion_matrix,
+            'balanced_accuracy': self._calculate_balanced_accuracy,
+            'matthews_correlation': self._calculate_matthews_correlation,
+            'cohen_kappa': self._calculate_cohen_kappa,
+            'class_likelihood': self._calculate_class_likelihood,
+            'calibration_metrics': self._calculate_calibration_metrics
+        }
 
-    # Sign the transaction with the private key
-    signed_tx = w3.eth.account.signTransaction(tx, PRIVATE_KEY)
+    def _get_regression_metrics(self) -> Dict[str, Callable]:
+        """Advanced regression metrics."""
+        return {
+            'mse': self._calculate_mse,
+            'rmse': self._calculate_rmse,
+            'mae': self._calculate_mae,
+            'mape': self._calculate_mape,
+            'r2_score': self._calculate_r2,
+            'adjusted_r2': self._calculate_adjusted_r2,
+            'explained_variance': self._calculate_explained_variance,
+            'max_error': self._calculate_max_error,
+            'residual_analysis': self._calculate_residual_analysis,
+            'heteroscedasticity': self._calculate_heteroscedasticity
+        }
 
-    # Send the transaction to the Sapphire blockchain
-    tx_hash = w3.eth.sendRawTransaction(signed_tx.rawTransaction)
-    print(f"Submitted evaluation result with transaction hash: {tx_hash.hex()}")
-    return tx_hash.hex()
+    def _get_ranking_metrics(self) -> Dict[str, Callable]:
+        """Ranking and recommendation metrics."""
+        return {
+            'ndcg': self._calculate_ndcg,
+            'map_score': self._calculate_map,
+            'mrr': self._calculate_mrr,
+            'precision_at_k': self._calculate_precision_at_k,
+            'recall_at_k': self._calculate_recall_at_k,
+            'hit_rate': self._calculate_hit_rate,
+            'rank_correlation': self._calculate_rank_correlation
+        }
 
+    def _get_clustering_metrics(self) -> Dict[str, Callable]:
+        """Clustering and segmentation metrics."""
+        return {
+            'silhouette_score': self._calculate_silhouette,
+            'calinski_harabasz': self._calculate_calinski_harabasz,
+            'davies_bouldin': self._calculate_davies_bouldin,
+            'cluster_stability': self._calculate_cluster_stability,
+            'cluster_cohesion': self._calculate_cluster_cohesion
+        }
+
+    def _get_robustness_metrics(self) -> Dict[str, Callable]:
+        """Model robustness and reliability metrics."""
+        return {
+            'noise_sensitivity': self._calculate_noise_sensitivity,
+            'adversarial_robustness': self._calculate_adversarial_robustness,
+            'concept_drift': self._calculate_concept_drift,
+            'feature_importance': self._calculate_feature_importance,
+            'model_calibration': self._calculate_model_calibration
+        }
+
+    async def _collect_verify_results(
+        self,
+        eval_jobs: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Collect and verify distributed evaluation results."""
+        results = {}
+        for job in eval_jobs:
+            # Verify job attestation
+            attestation = await self.rofl_verifier.verify_job_attestation(job)
+            if not attestation.is_valid:
+                raise ValueError(f"Invalid attestation for job {job['id']}")
+
+            # Collect results with verification
+            job_results = await self.compute_manager.get_job_results(job['id'])
+            verified_results = await self.rofl_verifier.verify_results(
+                job_results,
+                attestation
+            )
+            results[job['id']] = verified_results
+
+        return results
+
+    async def _calculate_metrics(
+        self,
+        results: Dict[str, Any],
+        metric_types: List[str]
+    ) -> Dict[str, Any]:
+        """Calculate comprehensive metrics from results."""
+        metrics = {}
+        for metric_type in metric_types:
+            if metric_type in self.metrics_registry:
+                metric_calculators = self.metrics_registry[metric_type]
+                metrics[metric_type] = {}
+                
+                for metric_name, calculator in metric_calculators.items():
+                    try:
+                        metric_value = await calculator(results)
+                        metrics[metric_type][metric_name] = metric_value
+                    except Exception as e:
+                        print(f"Error calculating {metric_name}: {str(e)}")
+                        metrics[metric_type][metric_name] = None
+
+        return metrics
+
+    def _calculate_confidence(
+        self,
+        metrics: Dict[str, Any],
+        verification: Dict[str, Any]
+    ) -> float:
+        """Calculate overall confidence score."""
+        # Implement confidence calculation based on metrics and verification
+        verification_score = verification.get('confidence', 0)
+        metric_scores = []
+        
+        for metric_type, metric_values in metrics.items():
+            if isinstance(metric_values, dict):
+                valid_metrics = [v for v in metric_values.values() if v is not None]
+                if valid_metrics:
+                    metric_scores.append(sum(valid_metrics) / len(valid_metrics))
+
+        if not metric_scores:
+            return verification_score
+
+        metric_confidence = sum(metric_scores) / len(metric_scores)
+        return (verification_score + metric_confidence) / 2
+
+class ROFLVerificationSystem:
+    def __init__(self, config: Dict[str, Any]):
+        """Initialize ROFL verification system."""
+        self.config = config
+        self.attestation_verifier = TEEAttestationVerifier(config)
+        self.compute_verifier = ComputeVerifier(config)
+
+    async def verify_computation(
+        self,
+        jobs: List[Dict[str, Any]],
+        results: Dict[str, Any],
+        metrics: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Comprehensive ROFL verification."""
+        try:
+            # Verify TEE attestations
+            attestations = await self._verify_attestations(jobs)
+            
+            # Verify computation integrity
+            compute_integrity = await self._verify_compute_integrity(
+                jobs,
+                attestations
+            )
+            
+            # Verify results consistency
+            results_consistency = await self._verify_results_consistency(
+                results,
+                attestations
+            )
+            
+            # Verify metrics validity
+            metrics_validity = await self._verify_metrics_validity(metrics)
+            
+            # Calculate verification confidence
+            confidence = self._calculate_verification_confidence(
+                attestations,
+                compute_integrity,
+                results_consistency,
+                metrics_validity
+            )
+
+            return {
+                'attestations': attestations,
+                'compute_integrity': compute_integrity,
+                'results_consistency': results_consistency,
+                'metrics_validity': metrics_validity,
+                'confidence': confidence,
+                'verification_timestamp': datetime.utcnow().isoformat()
+            }
+
+        except Exception as e:
+            print(f"Verification failed: {str(e)}")
+            raise
+
+    async def verify_job_attestation(
+        self,
+        job: Dict[str, Any]
+    ) -> AttestationResult:
+        """Verify individual job attestation."""
+        return await self.attestation_verifier.verify(job)
+
+    async def verify_results(
+        self,
+        results: Dict[str, Any],
+        attestation: AttestationResult
+    ) -> Dict[str, Any]:
+        """Verify computation results."""
+        return await self.compute_verifier.verify_results(results, attestation)
+
+# Example usage
+async def main():
+    # Initialize evaluator with ROFL config
+    rofl_config = {
+        'tee_type': 'sgx',
+        'verification_level': 'high',
+        'trusted_nodes': ['node1', 'node2']
+    }
+    
+    evaluator = AdvancedModelEvaluator(rofl_config)
+    
+    # Evaluation config
+    eval_config = {
+        'metric_types': [
+            'classification',
+            'robustness'
+        ],
+        'distribution': {
+            'num_nodes': 3,
+            'batch_size': 1000
+        }
+    }
+    
+    # Run evaluation
+    results = await evaluator.evaluate_model(
+        model_asset,
+        eval_dataset,
+        eval_config
+    )
+    
+    print(f"Evaluation results: {results}")
 
 if __name__ == "__main__":
-    # Example usage:
-    
-    # Example model evaluation params (these can be adjusted as needed)
-    model_params = {
-        "epochs": 5,
-        "learning_rate": 0.001,
-        "batch_size": 64,
-    }
-
-    # Step 1: Trigger model evaluation
-    asset_did = "did:op:123456789abcdef"  # Replace with the actual DID from Ocean
-    job_id = evaluate_model(asset_did, model_params)
-
-    # Step 2: Check the status of the compute job
-    status = check_compute_job_status(job_id)
-    print(f"Job status: {status}")
-
-    # Step 3: Fetch and report the result once complete
-    if status == 'completed':
-        result_file = fetch_compute_result(job_id)
-        if result_file:
-            report_result_on_chain(job_id, result_file)
+    asyncio.run(main())
