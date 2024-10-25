@@ -1,13 +1,14 @@
-// src/components/Marketplace.tsx
+'use client'
+
 import React, { useState, useCallback } from 'react';
 import { 
   useAccount, 
   usePublicClient,
   useWalletClient,
 } from 'wagmi';
-import { writeContract, readContract } from '@wagmi/core';
-import { formatEther } from 'viem';
-import { marketplaceConfig, oceanComputeConfig } from '@/config/contracts';
+import { readContract, writeContract } from '@wagmi/core';
+import { Address, formatEther, parseEther } from 'viem';
+
 import { useToast } from '@/hooks/use-toast';
 
 // UI Components
@@ -45,6 +46,14 @@ import {
   XCircle
 } from 'lucide-react';
 
+// Contract Configs
+import { 
+  MARKETPLACE_ADDRESS,
+  MARKETPLACE_ABI,
+  OCEAN_COMPUTE_ADDRESS,
+  OCEAN_COMPUTE_ABI 
+} from '@/config/contracts';
+
 // Types
 interface Model {
   id: bigint;
@@ -55,8 +64,8 @@ interface Model {
   accessType: string;
   computeCount: bigint;
   hasAccess: boolean;
-  oceanDataToken: `0x${string}`;
-  algorithmToken: `0x${string}`;
+  oceanDataToken: Address;
+  algorithmToken: Address;
   decryptedMetadata: any | null;
 }
 
@@ -68,21 +77,28 @@ interface ComputeJob {
   timestamp: bigint;
 }
 
+const marketplaceConfig = {
+  address: MARKETPLACE_ADDRESS,
+  abi: MARKETPLACE_ABI,
+} as const;
+
+const oceanComputeConfig = {
+  address: OCEAN_COMPUTE_ADDRESS,
+  abi: OCEAN_COMPUTE_ABI,
+} as const;
+
 export default function MarketplaceDashboard() {
-  // State
   const [models, setModels] = useState<Model[]>([]);
   const [computeJobs, setComputeJobs] = useState<ComputeJob[]>([]);
   const [selectedModel, setSelectedModel] = useState<Model | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // Hooks
   const { address } = useAccount();
   const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient();
   const { toast } = useToast();
 
-  // Load data
   const loadData = useCallback(async () => {
     if (!address || !publicClient) return;
 
@@ -93,22 +109,25 @@ export default function MarketplaceDashboard() {
       const count = await readContract({
         ...marketplaceConfig,
         functionName: 'getModelCount',
-        args: []
-      });
+        args: [],
+        account: address,
+      } as const);
 
       // Get models
       const modelData = await readContract({
         ...marketplaceConfig,
         functionName: 'getModels',
-        args: [BigInt(0), count as bigint]
-      });
+        args: [BigInt(0), count],
+        account: address,
+      } as const);
 
       // Get compute jobs
       const jobData = await readContract({
         ...marketplaceConfig,
         functionName: 'getComputeJobs',
-        args: [address as `0x${string}`]
-      });
+        args: [address],
+        account: address,
+      } as const);
 
       setModels(modelData as Model[]);
       setComputeJobs(jobData as ComputeJob[]);
@@ -123,31 +142,34 @@ export default function MarketplaceDashboard() {
     }
   }, [address, publicClient, toast]);
 
-  // Effects
   React.useEffect(() => {
     loadData();
   }, [loadData]);
 
-  // Handlers
   const handlePurchaseAccess = async (model: Model) => {
     if (!address || !walletClient) return;
 
     try {
       setIsProcessing(true);
-      const { hash } = await writeContract({
+
+      const { request } = await writeContract.prepare({
         ...marketplaceConfig,
         functionName: 'purchaseModelAccess',
         args: [model.id],
-        value: model.price
-      });
+        value: model.price,
+        account: address,
+      } as const);
 
+      const hash = await writeContract(request, { account: address });
       await publicClient?.waitForTransactionReceipt({ hash });
+
       await loadData();
       setSelectedModel(null);
       
       toast({
         title: 'Purchase Successful',
         description: 'You now have access to this model',
+        variant: 'default',
       });
     } catch (error) {
       toast({
@@ -165,19 +187,24 @@ export default function MarketplaceDashboard() {
 
     try {
       setIsProcessing(true);
-      const { hash } = await writeContract({
+
+      const { request } = await writeContract.prepare({
         ...oceanComputeConfig,
         functionName: 'startCompute',
-        args: [model.id, model.oceanDataToken, model.algorithmToken]
-      });
+        args: [model.id, model.oceanDataToken, model.algorithmToken],
+        account: address,
+      } as const);
 
+      const hash = await writeContract(request, { account: address });
       await publicClient?.waitForTransactionReceipt({ hash });
+
       await loadData();
       setSelectedModel(null);
 
       toast({
         title: 'Compute Job Started',
         description: 'Your computation request is being processed',
+        variant: 'default',
       });
     } catch (error) {
       toast({
@@ -213,6 +240,7 @@ export default function MarketplaceDashboard() {
       toast({
         title: 'Download Started',
         description: 'Your results are being downloaded',
+        variant: 'default',
       });
     } catch (error) {
       toast({
@@ -222,6 +250,21 @@ export default function MarketplaceDashboard() {
       });
     }
   };
+
+  const getBadgeClass = (status: 'completed' | 'failed' | 'processing') => {
+    switch (status) {
+      case 'completed':
+        return "bg-green-500";
+      case 'failed':
+        return "bg-destructive";
+      default:
+        return "bg-blue-500";
+    }
+  };
+
+  function cn(arg0: string): string | undefined {
+    throw new Error('Function not implemented.');
+  }
 
   return (
     <div className="container mx-auto p-6">
@@ -257,22 +300,24 @@ export default function MarketplaceDashboard() {
                         <CardDescription>{model.description}</CardDescription>
                       </div>
                       {model.hasComputeService && (
-                        <Badge variant="secondary">Compute Enabled</Badge>
+                        <Badge className="bg-secondary hover:bg-secondary/80">
+                          Compute Enabled
+                        </Badge>
                       )}
                     </div>
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-4">
                       <div className="flex items-center gap-2">
-                        <Activity className="h-4 w-4 text-gray-500" />
-                        <span className="text-sm text-gray-500">
+                        <Activity className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-sm text-muted-foreground">
                           Compute Jobs: {model.computeCount.toString()}
                         </span>
                       </div>
                       
                       <div className="flex items-center gap-2">
-                        <Lock className="h-4 w-4 text-gray-500" />
-                        <span className="text-sm text-gray-500">
+                        <Lock className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-sm text-muted-foreground">
                           Access Type: {model.accessType}
                         </span>
                       </div>
@@ -306,19 +351,23 @@ export default function MarketplaceDashboard() {
                       {job.status === 'completed' ? (
                         <CheckCircle2 className="h-6 w-6 text-green-500" />
                       ) : job.status === 'failed' ? (
-                        <XCircle className="h-6 w-6 text-red-500" />
+                        <XCircle className="h-6 w-6 text-destructive" />
                       ) : (
                         <PlayCircle className="h-6 w-6 text-blue-500" />
                       )}
                       <div>
                         <h3 className="font-medium">Compute Job #{String(job.id)}</h3>
-                        <p className="text-sm text-gray-500">Model: {job.modelName}</p>
+                        <p className="text-sm text-muted-foreground">
+                          Model: {job.modelName}
+                        </p>
                       </div>
                     </div>
                     
                     <div className="text-right">
-                      <p className="font-medium capitalize">{job.status}</p>
-                      <p className="text-sm text-gray-500">
+                      <Badge className={cn(getBadgeClass(job.status))}>
+                        {job.status}
+                      </Badge>
+                      <p className="text-sm text-muted-foreground mt-1">
                         Started: {new Date(Number(job.timestamp) * 1000).toLocaleString()}
                       </p>
                     </div>

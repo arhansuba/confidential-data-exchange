@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { SetStateAction, useState } from 'react'
 import { ethers } from 'ethers'
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -23,7 +23,7 @@ export default function ConfidentialAIExchange() {
   const [modelPrice, setModelPrice] = useState('')
   const [isUploading, setIsUploading] = useState(false)
   const [isPurchasing, setIsPurchasing] = useState(false)
-  const [selectedModel, setSelectedModel] = useState(null)
+  const [selectedModel, setSelectedModel] = useState<{ id: number; name: string; price: string; description: string } | null>(null)
 
   const handleModelUpload = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -38,13 +38,15 @@ export default function ConfidentialAIExchange() {
     alert('Model uploaded successfully!')
   }
 
-  const handleModelPurchase = async (model) => {
+  const handleModelPurchase = async (model: { id: number; name: string; price: string; description: string }) => {
     setSelectedModel(model)
     setIsPurchasing(true)
     // Simulating purchase process
     await new Promise(resolve => setTimeout(resolve, 2000))
     setIsPurchasing(false)
-    alert(`${model.name} purchased successfully!`)
+    if (model) {
+      alert(`${model.name} purchased successfully!`)
+    }
   }
 
   return (

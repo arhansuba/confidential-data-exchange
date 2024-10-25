@@ -1,31 +1,66 @@
-// contractHooks.ts
 import { useState, useEffect, useCallback } from 'react';
-import { ethers } from 'ethers';
+import { useAccount, usePublicClient, useWalletClient } from 'wagmi';
+import { 
+  parseEther, 
+  formatEther, 
+  keccak256, 
+  toHex, 
+  fromHex,
+  encodeFunctionData,
+  type Address 
+} from 'viem';
 import { useToast } from '@/hooks/use-toast';
 
-// Contract ABI - you would typically import this from a separate file
-const CONTRACT_ADDRESS = 'YOUR_CONTRACT_ADDRESS';
-const CONTRACT_ABI = [
-  "function listModel(bytes32 modelHash, bytes calldata encryptedMetadata, bytes32 accessKeyHash, uint256 price) external",
-  "function purchaseModel(uint256 modelId) external payable",
-  "function grantAccess(uint256 modelId, address buyer, bytes calldata encryptedAccessKey) external",
-  "function getAccessKey(uint256 modelId) external view returns (bytes memory)",
-  "function getModel(uint256 modelId) external view returns (tuple(address owner, bytes32 modelHash, bytes encryptedMetadata, bytes32 accessKeyHash, uint256 price, bool isActive))",
-  "function updatePrice(uint256 modelId, uint256 newPrice) external",
-  "function deactivateModel(uint256 modelId) external",
-  "event ModelListed(uint256 indexed modelId, address indexed owner, uint256 price)",
-  "event ModelPurchased(uint256 indexed modelId, address indexed buyer)",
-  "event ModelAccessGranted(uint256 indexed modelId, address indexed user)"
-];
+// Contract address should be properly typed as Address
+const CONTRACT_ADDRESS = '0x1234567890123456789012345678901234567890' as const;
 
-export interface Model {
-  id: number;
-  owner: string;
-  modelHash: string;
-  encryptedMetadata: string;
-  accessKeyHash: string;
-  price: ethers.BigNumber;
+// Typed contract ABI
+const CONTRACT_ABI = [
+  {
+    inputs: [],
+    name: 'getModelCount',
+    outputs: [{ type: 'uint256' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  {
+    inputs: [{ type: 'uint256' }],
+    name: 'getModel',
+    outputs: [{
+      components: [
+        { name: 'owner', type: 'address' },
+        { name: 'modelHash', type: 'bytes32' },
+        { name: 'encryptedMetadata', type: 'bytes' },
+        { name: 'accessKeyHash', type: 'bytes32' },
+        { name: 'price', type: 'uint256' },
+        { name: 'isActive', type: 'bool' }
+      ],
+      type: 'tuple'
+    }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  {
+    inputs: [{ type: 'uint256' }],
+    name: 'getAccessKey',
+    outputs: [{ type: 'bytes' }],
+    stateMutability: 'view',
+    type: 'function',
+  }
+] as const;
+
+// Define proper types for model data
+interface ModelData {
+  owner: Address;
+  modelHash: `0x${string}`;
+  encryptedMetadata: `0x${string}`;
+  accessKeyHash: `0x${string}`;
+  price: bigint;
   isActive: boolean;
+}
+
+export interface Model extends ModelData {
+  id: number;
   decryptedMetadata?: {
     name: string;
     description: string;
@@ -34,72 +69,45 @@ export interface Model {
 }
 
 export const useContractIntegration = () => {
-  const [contract, setContract] = useState<ethers.Contract | null>(null);
-  const [signer, setSigner] = useState<ethers.Signer | null>(null);
+  const { address } = useAccount();
+  const publicClient = usePublicClient();
+  const { data: walletClient } = useWalletClient();
   const [models, setModels] = useState<Model[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { toast } = useToast();
 
-  // Initialize contract and web3 connection
-  const initializeContract = useCallback(async () => {
-    try {
-      if (typeof window.ethereum !== 'undefined') {
-        // Request account access
-        await window.ethereum.request({ method: 'eth_requestAccounts' });
-        
-        const provider = new ethers.providers.Web3Provider(window.ethereum);
-        const signer = provider.getSigner();
-        setSigner(signer);
-
-        const contract = new ethers.Contract(
-          CONTRACT_ADDRESS,
-          CONTRACT_ABI,
-          signer
-        );
-        setContract(contract);
-
-        // Listen for network changes
-        window.ethereum.on('chainChanged', () => {
-          window.location.reload();
-        });
-
-        // Listen for account changes
-        window.ethereum.on('accountsChanged', () => {
-          window.location.reload();
-        });
-      } else {
-        throw new Error('Please install MetaMask or another Web3 wallet');
-      }
-    } catch (err) {
-      setError(err.message);
-      toast({
-        title: "Connection Error",
-        description: err.message,
-        variant: "destructive",
-      });
-    }
-  }, [toast]);
-
   // Load models from the contract
   const loadModels = useCallback(async () => {
-    if (!contract) return;
+    if (!publicClient || !address) return;
 
     try {
       setLoading(true);
       
-      // We'll assume there's a way to get the total number of models
-      // You might need to adjust this based on your contract implementation
-      const modelIds = await contract.getModelIds(); // Implement this method in your contract
-      
-      const modelPromises = modelIds.map(async (id: number) => {
-        const modelData = await contract.getModel(id);
-        
-        // Decrypt metadata if we have access
+      const modelCount = await publicClient.readContract({
+        address: CONTRACT_ADDRESS,
+        abi: CONTRACT_ABI,
+        functionName: 'getModelCount',
+      }) as bigint;
+
+      const modelPromises = Array.from({ length: Number(modelCount) }, async (_, index) => {
+        const modelData = await publicClient.readContract({
+          address: CONTRACT_ADDRESS,
+          abi: CONTRACT_ABI,
+          functionName: 'getModel',
+          args: [BigInt(index)],
+        }) as ModelData;
+
         let decryptedMetadata;
         try {
-          const accessKey = await contract.getAccessKey(id);
-          if (accessKey) {
+          const accessKey = await publicClient.readContract({
+            address: CONTRACT_ADDRESS,
+            abi: CONTRACT_ABI,
+            functionName: 'getAccessKey',
+            args: [BigInt(index)],
+          }) as `0x${string}`;
+          
+          if (accessKey && accessKey !== '0x') {
             decryptedMetadata = await decryptModelMetadata(modelData.encryptedMetadata, accessKey);
           }
         } catch (err) {
@@ -107,13 +115,8 @@ export const useContractIntegration = () => {
         }
 
         return {
-          id,
-          owner: modelData.owner,
-          modelHash: modelData.modelHash,
-          encryptedMetadata: modelData.encryptedMetadata,
-          accessKeyHash: modelData.accessKeyHash,
-          price: modelData.price,
-          isActive: modelData.isActive,
+          id: index,
+          ...modelData,
           decryptedMetadata
         };
       });
@@ -121,16 +124,17 @@ export const useContractIntegration = () => {
       const loadedModels = await Promise.all(modelPromises);
       setModels(loadedModels);
     } catch (err) {
-      setError(err.message);
+      const message = err instanceof Error ? err.message : 'Unknown error loading models';
+      setError(message);
       toast({
         title: "Error Loading Models",
-        description: err.message,
-        variant: "destructive",
+        description: message,
+        type: "error",
       });
     } finally {
       setLoading(false);
     }
-  }, [contract, toast]);
+  }, [publicClient, address, toast]);
 
   // List a new model
   const listModel = async (
@@ -142,48 +146,40 @@ export const useContractIntegration = () => {
     },
     price: string
   ) => {
-    if (!contract || !signer) return;
+    if (!walletClient || !address) return;
 
     try {
       setLoading(true);
       
-      // Generate model hash
       const modelHash = await generateModelHash(modelFile);
-      
-      // Generate encryption keys
       const { publicKey, privateKey } = await generateEncryptionKeys();
-      
-      // Encrypt metadata
       const encryptedMetadata = await encryptMetadata(metadata, publicKey);
-      
-      // Calculate access key hash
-      const accessKeyHash = ethers.utils.keccak256(publicKey);
-      
-      // Convert price to wei
-      const priceWei = ethers.utils.parseEther(price);
+      const accessKeyHash = keccak256(toHex(publicKey));
+      const priceWei = parseEther(price);
 
-      // List model on contract
-      const tx = await contract.listModel(
-        modelHash,
-        encryptedMetadata,
-        accessKeyHash,
-        priceWei
-      );
+      const hash = await walletClient.writeContract({
+        address: CONTRACT_ADDRESS,
+        abi: CONTRACT_ABI,
+        functionName: 'listModel',
+        args: [modelHash, encryptedMetadata, accessKeyHash, priceWei],
+      });
 
-      await tx.wait();
+      if (publicClient) {
+        await publicClient.waitForTransactionReceipt({ hash });
+      }
 
       toast({
         title: "Model Listed",
         description: "Your model has been successfully listed on the marketplace",
       });
 
-      // Reload models
       await loadModels();
     } catch (err) {
-      setError(err.message);
+      const message = err instanceof Error ? err.message : 'Unknown error listing model';
+      setError(message);
       toast({
         title: "Listing Error",
-        description: err.message,
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -192,30 +188,34 @@ export const useContractIntegration = () => {
   };
 
   // Purchase model access
-  const purchaseModel = async (modelId: number, price: ethers.BigNumber) => {
-    if (!contract || !signer) return;
+  const purchaseModel = async (modelId: number, price: bigint) => {
+    if (!walletClient || !address || !publicClient) return;
 
     try {
       setLoading(true);
 
-      const tx = await contract.purchaseModel(modelId, {
-        value: price
+      const hash = await walletClient.writeContract({
+        address: CONTRACT_ADDRESS,
+        abi: CONTRACT_ABI,
+        functionName: 'purchaseModel',
+        args: [BigInt(modelId)],
+        value: price,
       });
 
-      await tx.wait();
+      await publicClient.waitForTransactionReceipt({ hash });
 
       toast({
         title: "Purchase Successful",
         description: "You now have access to this model",
       });
 
-      // Reload models to get updated access
       await loadModels();
     } catch (err) {
-      setError(err.message);
+      const message = err instanceof Error ? err.message : 'Unknown error purchasing model';
+      setError(message);
       toast({
         title: "Purchase Error",
-        description: err.message,
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -225,14 +225,20 @@ export const useContractIntegration = () => {
 
   // Update model price
   const updateModelPrice = async (modelId: number, newPrice: string) => {
-    if (!contract || !signer) return;
+    if (!walletClient || !address || !publicClient) return;
 
     try {
       setLoading(true);
 
-      const priceWei = ethers.utils.parseEther(newPrice);
-      const tx = await contract.updatePrice(modelId, priceWei);
-      await tx.wait();
+      const priceWei = parseEther(newPrice);
+      const hash = await walletClient.writeContract({
+        address: CONTRACT_ADDRESS,
+        abi: CONTRACT_ABI,
+        functionName: 'updatePrice',
+        args: [BigInt(modelId), priceWei],
+      });
+
+      await publicClient.waitForTransactionReceipt({ hash });
 
       toast({
         title: "Price Updated",
@@ -241,10 +247,11 @@ export const useContractIntegration = () => {
 
       await loadModels();
     } catch (err) {
-      setError(err.message);
+      const message = err instanceof Error ? err.message : 'Unknown error updating price';
+      setError(message);
       toast({
         title: "Update Error",
-        description: err.message,
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -252,45 +259,11 @@ export const useContractIntegration = () => {
     }
   };
 
-  // Deactivate model
-  const deactivateModel = async (modelId: number) => {
-    if (!contract || !signer) return;
-
-    try {
-      setLoading(true);
-
-      const tx = await contract.deactivateModel(modelId);
-      await tx.wait();
-
-      toast({
-        title: "Model Deactivated",
-        description: "Model has been successfully deactivated",
-      });
-
-      await loadModels();
-    } catch (err) {
-      setError(err.message);
-      toast({
-        title: "Deactivation Error",
-        description: err.message,
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Initialize on component mount
   useEffect(() => {
-    initializeContract();
-  }, [initializeContract]);
-
-  // Load models when contract is initialized
-  useEffect(() => {
-    if (contract) {
+    if (address && publicClient) {
       loadModels();
     }
-  }, [contract, loadModels]);
+  }, [address, publicClient, loadModels]);
 
   return {
     models,
@@ -299,21 +272,18 @@ export const useContractIntegration = () => {
     listModel,
     purchaseModel,
     updateModelPrice,
-    deactivateModel,
     loadModels,
   };
 };
 
-// Utility functions for encryption/decryption
-const generateModelHash = async (file: File): Promise<string> => {
+// Utility functions with proper typing
+const generateModelHash = async (file: File): Promise<`0x${string}`> => {
   const buffer = await file.arrayBuffer();
-  const hash = ethers.utils.keccak256(new Uint8Array(buffer));
-  return hash;
+  return keccak256(toHex(new Uint8Array(buffer)));
 };
 
-const generateEncryptionKeys = async () => {
+const generateEncryptionKeys = async (): Promise<{ publicKey: string; privateKey: string }> => {
   // Implementation would use the Sapphire library's encryption capabilities
-  // This is a placeholder
   return {
     publicKey: "placeholder-public-key",
     privateKey: "placeholder-private-key"
@@ -323,23 +293,18 @@ const generateEncryptionKeys = async () => {
 const encryptMetadata = async (
   metadata: any,
   publicKey: string
-): Promise<string> => {
+): Promise<`0x${string}`> => {
   // Implementation would use the Sapphire library's encryption capabilities
-  // This is a placeholder
-  return ethers.utils.hexlify(
-    ethers.utils.toUtf8Bytes(JSON.stringify(metadata))
-  );
+  return toHex(new TextEncoder().encode(JSON.stringify(metadata))) as `0x${string}`;
 };
 
 const decryptModelMetadata = async (
-  encryptedMetadata: string,
-  accessKey: string
+  encryptedMetadata: `0x${string}`,
+  accessKey: `0x${string}`
 ): Promise<any> => {
   // Implementation would use the Sapphire library's decryption capabilities
-  // This is a placeholder
-  const decrypted = ethers.utils.toUtf8String(
-    ethers.utils.arrayify(encryptedMetadata)
-  );
+  const decoder = new TextDecoder();
+  const decrypted = decoder.decode(fromHex(encryptedMetadata, 'bytes'));
   return JSON.parse(decrypted);
 };
 

@@ -51,7 +51,14 @@ const ModelExchange = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const { toast } = useToast();
 
-  const [uploadData, setUploadData] = useState({
+  const [uploadData, setUploadData] = useState<{
+    name: string;
+    description: string;
+    price: string;
+    computeEnabled: boolean;
+    file: File | null;
+    oceanToken: string;
+  }>({
     name: "",
     description: "",
     price: "",
@@ -73,11 +80,16 @@ const ModelExchange = () => {
     } catch (error) {
       toast({
         title: "Error Loading Models",
-        description: error.message,
+        description: (error as Error).message,
         variant: "destructive"
       });
       setLoading(false);
     }
+  };
+
+  const handleUpload = () => {
+    // Add your upload logic here
+    console.log("Uploading model:", uploadData);
   };
 
   return (
@@ -166,7 +178,7 @@ const ModelExchange = () => {
                   <Input
                     type="file"
                     className="hidden"
-                    onChange={(e) => setUploadData({ ...uploadData, file: e.target.files?.[0] })}
+                    onChange={(e) => setUploadData({ ...uploadData, file: e.target.files?.[0] ?? null })}
                     accept=".h5,.pkl,.pt,.pth,.onnx"
                   />
                   <FileCode className="mx-auto h-8 w-8 text-gray-400" />
@@ -218,7 +230,7 @@ const ModelExchange = () => {
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" className="ml-4">
+                <Button className="ml-4">
                   <MoreVertical className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
@@ -247,7 +259,7 @@ const ModelExchange = () => {
                           Advanced language processing model
                         </CardDescription>
                       </div>
-                      <Badge variant="secondary">
+                      <Badge>
                         Compute Enabled
                       </Badge>
                     </div>
@@ -262,7 +274,7 @@ const ModelExchange = () => {
                       </div>
                       <div className="flex justify-between items-center">
                         <span className="text-2xl font-bold">0.5 ETH</span>
-                        <Button variant="default">
+                        <Button>
                           <Download className="mr-2 h-4 w-4" />
                           Purchase Access
                         </Button>

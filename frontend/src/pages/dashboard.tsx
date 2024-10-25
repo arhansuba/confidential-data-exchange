@@ -1,7 +1,8 @@
 'use client'
 
 import { useState } from 'react'
-import { ethers } from 'ethers'
+import { useAccount } from 'wagmi'
+import { formatEther, parseEther } from 'viem'
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
@@ -9,27 +10,118 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { AlertCircle, CheckCircle2, HelpCircle } from 'lucide-react'
+import { useToast } from "../hooks/use-toast"
+
+interface Model {
+  id: number;
+  name: string;
+  price: string;
+  status: 'Active' | 'Pending Evaluation' | 'Inactive';
+  evaluationScore: number | null;
+}
+
+interface Transaction {
+  id: number;
+  type: 'Sale' | 'Purchase';
+  model: string;
+  amount: string;
+  date: string;
+}
 
 // Mock data for demonstration
-const mockUploadedModels = [
-  { id: 1, name: "Sentiment Analyzer", price: "0.05 ETH", status: "Active", evaluationScore: 8.5 },
-  { id: 2, name: "Image Classifier", price: "0.1 ETH", status: "Pending Evaluation", evaluationScore: null },
-  { id: 3, name: "Text Summarizer", price: "0.08 ETH", status: "Inactive", evaluationScore: 7.2 },
+const mockUploadedModels: Model[] = [
+  { id: 1, name: "Sentiment Analyzer", price: "0.05", status: "Active", evaluationScore: 8.5 },
+  { id: 2, name: "Image Classifier", price: "0.1", status: "Pending Evaluation", evaluationScore: null },
+  { id: 3, name: "Text Summarizer", price: "0.08", status: "Inactive", evaluationScore: 7.2 },
 ]
 
-const mockTransactions = [
-  { id: 1, type: "Sale", model: "Sentiment Analyzer", amount: "0.05 ETH", date: "2023-04-15" },
-  { id: 2, type: "Purchase", model: "GPT-4", amount: "0.2 ETH", date: "2023-04-10" },
-  { id: 3, type: "Sale", model: "Text Summarizer", amount: "0.08 ETH", date: "2023-04-05" },
+const mockTransactions: Transaction[] = [
+  { id: 1, type: "Sale", model: "Sentiment Analyzer", amount: "0.05", date: "2023-04-15" },
+  { id: 2, type: "Purchase", model: "GPT-4", amount: "0.2", date: "2023-04-10" },
+  { id: 3, type: "Sale", model: "Text Summarizer", amount: "0.08", date: "2023-04-05" },
 ]
+
+type ModelAction = 'activate' | 'deactivate' | 'evaluate' | 'viewEvaluation';
 
 export default function Dashboard() {
-  const [selectedModel, setSelectedModel] = useState(null)
+  const { address } = useAccount()
+  const { toast } = useToast()
+  const [selectedModel, setSelectedModel] = useState<Model | null>(null)
 
-  const handleModelAction = (model, action) => {
-    setSelectedModel(model)
-    // Implement actual logic for model actions (e.g., activate, deactivate, request evaluation)
-    console.log(`${action} model:`, model)
+  const handleModelAction = async (model: Model, action: ModelAction) => {
+    if (!address) {
+      toast({
+        title: "Wallet Not Connected",
+        description: "Please connect your wallet to perform this action",
+      })
+      return
+    }
+
+    try {
+      setSelectedModel(model)
+      
+      switch (action) {
+        case 'activate':
+          // Implement activation logic
+          toast({
+            title: "Model Activated",
+            description: `${model.name} has been activated successfully`
+          })
+          break
+
+        case 'deactivate':
+          // Implement deactivation logic
+          toast({
+            title: "Model Deactivated",
+            description: `${model.name} has been deactivated successfully`
+          })
+          break
+
+        case 'evaluate':
+          // Implement evaluation request logic
+          toast({
+            title: "Evaluation Requested",
+            description: `Evaluation requested for ${model.name}`
+          })
+          break
+
+        case 'viewEvaluation':
+          // Implement evaluation details view logic
+          toast({
+            title: "Evaluation Details",
+            description: `Viewing evaluation details for ${model.name}`
+          })
+          break
+      }
+    } catch (error) {
+      toast({
+        title: "Action Failed",
+        description: error instanceof Error ? error.message : "Something went wrong"
+      })
+    }
+  }
+
+  const formatPrice = (price: string): string => {
+    try {
+      return `${price} ETH`
+    } catch (error) {
+      return price
+    }
+  }
+
+  const getBadgeVariant = (status: Model['status'] | Transaction['type']) => {
+    switch (status) {
+      case 'Active':
+      case 'Sale':
+        return 'default'
+      case 'Inactive':
+      case 'Purchase':
+        return 'secondary'
+      case 'Pending Evaluation':
+        return 'outline'
+      default:
+        return 'secondary'
+    }
   }
 
   return (
@@ -64,9 +156,9 @@ export default function Dashboard() {
                   {mockUploadedModels.map((model) => (
                     <TableRow key={model.id}>
                       <TableCell>{model.name}</TableCell>
-                      <TableCell>{model.price}</TableCell>
+                      <TableCell>{formatPrice(model.price)}</TableCell>
                       <TableCell>
-                        <Badge variant={model.status === 'Active' ? 'default' : 'secondary'}>
+                        <Badge>
                           {model.status}
                         </Badge>
                       </TableCell>
@@ -86,7 +178,7 @@ export default function Dashboard() {
                       <TableCell>
                         <Dialog>
                           <DialogTrigger asChild>
-                            <Button variant="outline" size="sm">Manage</Button>
+                            <Button>Manage</Button>
                           </DialogTrigger>
                           <DialogContent>
                             <DialogHeader>
@@ -97,14 +189,13 @@ export default function Dashboard() {
                             </DialogHeader>
                             <div className="flex justify-end space-x-2">
                               <Button
-                                variant="outline"
+                                className="outline"
                                 onClick={() => handleModelAction(model, 'deactivate')}
                                 disabled={model.status !== 'Active'}
                               >
                                 Deactivate
                               </Button>
                               <Button
-                                variant="outline"
                                 onClick={() => handleModelAction(model, 'activate')}
                                 disabled={model.status === 'Active'}
                               >
@@ -148,12 +239,12 @@ export default function Dashboard() {
                   {mockTransactions.map((transaction) => (
                     <TableRow key={transaction.id}>
                       <TableCell>
-                        <Badge variant={transaction.type === 'Sale' ? 'default' : 'secondary'}>
+                        <Badge>
                           {transaction.type}
                         </Badge>
                       </TableCell>
                       <TableCell>{transaction.model}</TableCell>
-                      <TableCell>{transaction.amount}</TableCell>
+                      <TableCell>{formatPrice(transaction.amount)}</TableCell>
                       <TableCell>{transaction.date}</TableCell>
                     </TableRow>
                   ))}
@@ -197,14 +288,12 @@ export default function Dashboard() {
                         )}
                       </TableCell>
                       <TableCell>
-                        <Badge variant={model.status === 'Active' ? 'default' : 'secondary'}>
+                        <Badge>
                           {model.status}
                         </Badge>
                       </TableCell>
                       <TableCell>
                         <Button
-                          variant="outline"
-                          size="sm"
                           onClick={() => handleModelAction(model, 'viewEvaluation')}
                           disabled={!model.evaluationScore}
                         >

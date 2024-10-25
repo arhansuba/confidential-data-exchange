@@ -100,7 +100,7 @@ const DataManagement = () => {
     } catch (error) {
       toast({
         title: "Error Loading Datasets",
-        description: error.message,
+        description: (error as any).message,
         variant: "destructive"
       });
     } finally {
@@ -122,7 +122,7 @@ const DataManagement = () => {
     } catch (error) {
       toast({
         title: "Update Failed",
-        description: error.message,
+        description: (error as any).message,
         variant: "destructive"
       });
     }
@@ -169,10 +169,10 @@ const DataManagement = () => {
                         Size: {dataset.size}
                       </CardDescription>
                     </div>
-                    <Badge variant={
-                      dataset.status === 'active' ? 'default' :
-                      dataset.status === 'paused' ? 'secondary' :
-                      'destructive'
+                    <Badge className={
+                      dataset.status === 'active' ? 'bg-green-500 text-white' :
+                      dataset.status === 'paused' ? 'bg-yellow-500 text-white' :
+                      'bg-red-500 text-white'
                     }>
                       {dataset.status}
                     </Badge>
@@ -204,7 +204,7 @@ const DataManagement = () => {
                       </div>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon">
+                          <Button>
                             <MoreVertical className="h-4 w-4" />
                           </Button>
                         </DropdownMenuTrigger>
@@ -251,11 +251,11 @@ const DataManagement = () => {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Button variant="outline" size="sm">
+                      <Button>
                         <Download className="h-4 w-4 mr-2" />
                         Download
                       </Button>
-                      <Button variant="outline" size="sm">
+                      <Button>
                         <Settings className="h-4 w-4 mr-2" />
                         Settings
                       </Button>
@@ -286,7 +286,7 @@ const DataManagement = () => {
                           {dataset.accessControl.type === 'fixed' ? 'Fixed Price' : 'Dynamic Pricing'}
                         </p>
                       </div>
-                      <Badge variant="outline">
+                      <Badge>
                         <Lock className="h-4 w-4 mr-2" />
                         {dataset.accessControl.allowedUsers.length} Users
                       </Badge>
@@ -304,10 +304,10 @@ const DataManagement = () => {
                     </div>
 
                     <div className="flex justify-end gap-2">
-                      <Button variant="outline" size="sm">
+                      <Button>
                         Manage Access
                       </Button>
-                      <Button variant="outline" size="sm">
+                      <Button>
                         Update Price
                       </Button>
                     </div>
@@ -337,10 +337,10 @@ const DataManagement = () => {
                           {dataset.computeStats.totalJobs} Total Jobs
                         </p>
                       </div>
-                      <Badge variant={
-                        dataset.computeStats.successRate > 90 ? 'success' :
-                        dataset.computeStats.successRate > 70 ? 'warning' :
-                        'destructive'
+                      <Badge className={
+                        dataset.computeStats.successRate > 90 ? 'bg-green-500 text-white' :
+                        dataset.computeStats.successRate > 70 ? 'bg-yellow-500 text-white' :
+                        'bg-red-500 text-white'
                       }>
                         {dataset.computeStats.successRate}% Success Rate
                       </Badge>
@@ -368,10 +368,10 @@ const DataManagement = () => {
                     </div>
 
                     <div className="flex justify-end gap-2">
-                      <Button variant="outline" size="sm">
+                      <Button>
                         View Jobs
                       </Button>
-                      <Button variant="outline" size="sm">
+                      <Button>
                         Settings
                       </Button>
                     </div>

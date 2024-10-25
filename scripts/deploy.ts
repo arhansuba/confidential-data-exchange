@@ -1,40 +1,62 @@
-import { ethers } from "hardhat";
-import * as fs from "fs";
+import { ethers, network } from "hardhat";
+import { verify } from "./verify";
+import type { ConfidentialAIModel, NFTMarketplace, ROFLIntegration } from "../typechain-types";
 
 async function main() {
-    // Get the contract factories
-    const ConfidentialAIModel = await ethers.getContractFactory("ConfidentialAIModel");
-    const NFTMarketplace = await ethers.getContractFactory("NFTMarketplace");
-    const ROFLIntegration = await ethers.getContractFactory("ROFLIntegration");
+  // Deploy ConfidentialAIModel
+  const ConfidentialAIModel = await ethers.getContractFactory("ConfidentialAIModel");
+  const confidentialAIModel = await ConfidentialAIModel.deploy();
+  await confidentialAIModel.waitForDeployment();
+  console.log(`ConfidentialAIModel deployed to: ${await confidentialAIModel.getAddress()}`);
 
-    // Deploy ConfidentialAIModel
-    const confidentialAIModel = await ConfidentialAIModel.deploy();
-    await confidentialAIModel.deployed();
-    console.log("ConfidentialAIModel deployed to:", confidentialAIModel.address);
+  // Deploy NFTMarketplace
+  const NFTMarketplace = await ethers.getContractFactory("NFTMarketplace");
+  const nftMarketplace = await NFTMarketplace.deploy("0xYourNFTContractAddress");
+  await nftMarketplace.waitForDeployment();
+  console.log(`NFTMarketplace deployed to: ${await nftMarketplace.getAddress()}`);
 
-    // Deploy NFTMarketplace
-    const nftMarketplace = await NFTMarketplace.deploy(confidentialAIModel.address); // Pass the address of ConfidentialAIModel if needed
-    await nftMarketplace.deployed();
-    console.log("NFTMarketplace deployed to:", nftMarketplace.address);
+  // Deploy ROFLIntegration
+  const ROFLIntegration = await ethers.getContractFactory("ROFLIntegration");
+  const roflIntegration = await ROFLIntegration.deploy();
+  await roflIntegration.waitForDeployment();
+  console.log(`ROFLIntegration deployed to: ${await roflIntegration.getAddress()}`);
 
-    // Deploy ROFLIntegration
-    const roflIntegration = await ROFLIntegration.deploy();
-    await roflIntegration.deployed();
-    console.log("ROFLIntegration deployed to:", roflIntegration.address);
+  // Initialize contracts if needed
+  // Example: await confidentialAIModel.initialize(...args);
+  
+  // Save deployed addresses
+  const addresses = {
+    confidentialAIModel: await confidentialAIModel.getAddress(),
+    nftMarketplace: await nftMarketplace.getAddress(),
+    roflIntegration: await roflIntegration.getAddress(),
+  };
 
-    // Optionally, you can save the deployed addresses to a file or .env
-    const addresses = {
-        ConfidentialAIModel: confidentialAIModel.address,
-        NFTMarketplace: nftMarketplace.address,
-        ROFLIntegration: roflIntegration.address,
-    };
-    fs.writeFileSync("./scripts/addresses.json", JSON.stringify(addresses, null, 2));
+  // Save addresses to a file for frontend use
+  const fs = require("fs");
+  fs.writeFileSync(
+    "deployed-addresses.json",
+    JSON.stringify(addresses, null, 2)
+  );
+
+  // Verify contracts if not on localhost
+  if (network.name !== "localhost" && network.name !== "hardhat") {
+    console.log("Verifying contracts...");
+    
+    // Add delay before verification
+    console.log("Waiting for block confirmations...");
+    await new Promise(resolve => setTimeout(resolve, 30000)); // 30 seconds
+
+    await verify(await confidentialAIModel.getAddress(), []);
+    await verify(await nftMarketplace.getAddress(), []);
+    await verify(await roflIntegration.getAddress(), []);
+  }
+
+  console.log("Deployment complete! Addresses saved to deployed-addresses.json");
 }
 
-// Execute the main function and handle errors
 main()
-    .then(() => process.exit(0))
-    .catch((error) => {
-        console.error(error);
-        process.exit(1);
-    });
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });

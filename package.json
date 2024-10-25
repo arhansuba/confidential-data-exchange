@@ -11,11 +11,17 @@
   "description": "",
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
-    "hardhat": "^2.22.14"
+    "@nomicfoundation/hardhat-verify": "^2.0.11",
+    "@oasisprotocol/sapphire-hardhat": "^2.19.4",
+    "dotenv": "^16.4.5",
+    "hardhat": "^2.22.15",
+    "hardhat-deploy": "^0.14.0"
   },
   "dependencies": {
-    "@oasisprotocol/sapphire-hardhat": "^2.19.4",
+    "@types/web3": "^1.0.20",
     "connectkit": "^1.8.2",
-    "wagmi": "^2.12.25"
+    "next-axiom": "^1.5.1",
+    "wagmi": "^2.12.25",
+    "web3": "^4.14.0"
   }
 }

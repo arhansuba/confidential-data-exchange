@@ -6,7 +6,7 @@ import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract NFTMarketplace is Ownable, ReentrancyGuard {
+contract NFTMarketplace is Ownable(msg.sender), ReentrancyGuard {
     struct Listing {
         uint256 tokenId;          // ID of the NFT
         address seller;           // Address of the seller
@@ -30,6 +30,7 @@ contract NFTMarketplace is Ownable, ReentrancyGuard {
     IERC721 public nftContract;
 
     constructor(address _nftContract) {
+        require(_nftContract != address(0), "NFT contract address cannot be zero address");
         nftContract = IERC721(_nftContract);
     }
 
@@ -65,9 +66,15 @@ contract NFTMarketplace is Ownable, ReentrancyGuard {
         Listing storage listing = listings[tokenId];
         require(listing.isListed, "NFT is not listed for sale");
         require(msg.value >= listing.price, "Insufficient funds sent");
+        require(msg.sender != listing.seller, "Seller cannot buy their own NFT");
 
         // Transfer funds to the seller
         payable(listing.seller).transfer(listing.price);
+
+        // If buyer sent more than the price, refund the excess
+        if (msg.value > listing.price) {
+            payable(msg.sender).transfer(msg.value - listing.price);
+        }
 
         // Transfer the NFT to the buyer
         nftContract.transferFrom(address(this), msg.sender, tokenId);
@@ -118,5 +125,25 @@ contract NFTMarketplace is Ownable, ReentrancyGuard {
 
         // Update the price
         listing.price = newPrice;
+
+        // Emit event for price update
+        emit NFTListed(tokenId, msg.sender, newPrice);
+    }
+
+    /**
+     * @dev Emergency function to withdraw stuck funds (only owner)
+     */
+    function emergencyWithdraw() external onlyOwner {
+        require(address(this).balance > 0, "No funds to withdraw");
+        payable(owner()).transfer(address(this).balance);
+    }
+
+    /**
+     * @dev Check if an NFT is listed in the marketplace
+     * @param tokenId The ID of the NFT to check
+     * @return bool indicating if the NFT is listed
+     */
+    function isNFTListed(uint256 tokenId) external view returns (bool) {
+        return listings[tokenId].isListed;
     }
 }

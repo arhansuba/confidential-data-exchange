@@ -53,8 +53,7 @@ const ComputeRequest: React.FC<ComputeRequestProps> = ({
       setStatus('failed');
       toast({
         title: "Request Failed",
-        description: error.message,
-        variant: "destructive",
+        description: (error as Error).message,
       });
     }
   };
@@ -69,11 +68,11 @@ const ComputeRequest: React.FC<ComputeRequestProps> = ({
               Model: {modelName}
             </CardDescription>
           </div>
-          <Badge variant={
-            status === 'processing' ? "default" :
-            status === 'completed' ? "success" :
-            status === 'failed' ? "destructive" :
-            "secondary"
+          <Badge className={
+            status === 'processing' ? "badge-default" :
+            status === 'completed' ? "badge-success" :
+            status === 'failed' ? "badge-destructive" :
+            "badge-secondary"
           }>
             {status.charAt(0).toUpperCase() + status.slice(1)}
           </Badge>

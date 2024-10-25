@@ -1,7 +1,18 @@
 // oceanIntegration.ts
-import { Provider } from '@oceanprotocol/lib';
-import { ethers } from 'ethers';
-import { Sapphire } from '@oasisprotocol/sapphire-hardhat';
+import { PublicClient, WalletClient } from 'viem';
+import { randomBytes } from 'crypto';
+//import { encrypt, decrypt } from '@oasisprotocol/sapphire-paratime/crypto';
+
+// Ocean Protocol types
+interface DDO {
+  id: string;
+  dataToken: string;
+  services: Array<{
+    type: string;
+    serviceEndpoint: string;
+    attributes: Record<string, unknown>;
+  }>;
+}
 
 interface ComputeJob {
   jobId: string;
@@ -15,87 +26,116 @@ interface ComputeParams {
   environment: string;
 }
 
+type ComputeStatus = 0 | 1 | 2 | 3;
+
+const computeABI = [
+  {
+    name: 'startCompute',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'dataToken', type: 'address' },
+      { name: 'algorithmToken', type: 'address' },
+      { name: 'encryptedParams', type: 'bytes' }
+    ],
+    outputs: [{ name: 'jobId', type: 'bytes32' }]
+  },
+  {
+    name: 'getComputeResult',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'jobId', type: 'bytes32' }],
+    outputs: [
+      { name: 'result', type: 'bytes' },
+      { name: 'status', type: 'uint8' }
+    ]
+  }
+] as const;
+
 export class OceanComputeService {
-  private provider: Provider;
-  private contract: ethers.Contract;
-  private oceanProvider: string;
+  private publicClient: PublicClient;
+  private walletClient: WalletClient;
+  private contractAddress: `0x${string}`;
+  private oceanProviderUrl: string;
 
   constructor(
-    web3Provider: ethers.providers.Web3Provider,
-    contractAddress: string,
+    publicClient: PublicClient,
+    walletClient: WalletClient,
+    contractAddress: `0x${string}`,
     oceanProviderUrl: string
   ) {
-    this.provider = new Provider({
-      web3Provider,
-      aquarius: oceanProviderUrl + '/api/aquarius',
-      providerUri: oceanProviderUrl
-    });
-
-    // Initialize contract
-    this.contract = new ethers.Contract(
-      contractAddress,
-      [
-        "function startCompute(address dataToken, address algorithmToken, bytes calldata encryptedParams) external returns (bytes32)",
-        "function getComputeResult(bytes32 jobId) external view returns (bytes memory result, uint8 status)"
-      ],
-      web3Provider.getSigner()
-    );
-
-    this.oceanProvider = oceanProviderUrl;
+    this.publicClient = publicClient;
+    this.walletClient = walletClient;
+    this.contractAddress = contractAddress;
+    this.oceanProviderUrl = oceanProviderUrl;
   }
 
-  /**
-   * Start a compute-to-data job
-   * @param datasetDid Ocean dataset DID
-   * @param algorithmDid Ocean algorithm DID
-   * @param params Compute parameters
-   */
+  async getDDO(did: string): Promise<DDO> {
+    const response = await fetch(`${this.oceanProviderUrl}/api/aquarius/assets/ddo/${did}`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch DDO: ${response.statusText}`);
+    }
+    return response.json();
+  }
+
   async startComputeJob(
     datasetDid: string,
     algorithmDid: string,
     params: ComputeParams
   ): Promise<string> {
     try {
-      // Get dataset DDO
-      const dataset = await this.provider.getDDO(datasetDid);
-      const algorithm = await this.provider.getDDO(algorithmDid);
+      // Get dataset and algorithm DDOs
+      const [dataset, algorithm] = await Promise.all([
+        this.getDDO(datasetDid),
+        this.getDDO(algorithmDid)
+      ]);
 
-      // Get compute service
-      const computeService = dataset.findServiceByType('compute');
+      // Check compute service availability
+      const computeService = dataset.services.find(s => s.type === 'compute');
       if (!computeService) {
         throw new Error('Dataset does not support compute');
       }
 
-      // Encrypt compute parameters using Sapphire
+      // Encrypt compute parameters
       const encryptedParams = await this.encryptComputeParams(params);
 
       // Start compute job
-      const tx = await this.contract.startCompute(
-        dataset.dataToken,
-        algorithm.dataToken,
-        encryptedParams
-      );
-      const receipt = await tx.wait();
+      const { request } = await this.publicClient.simulateContract({
+        address: this.contractAddress,
+        abi: computeABI,
+        functionName: 'startCompute',
+        args: [dataset.dataToken as `0x${string}`, algorithm.dataToken as `0x${string}`, encryptedParams]
+      });
 
-      // Get job ID from events
-      const event = receipt.events?.find(e => e.event === 'ComputeJobStarted');
-      return event?.args?.jobId;
+      const hash = await this.walletClient.writeContract({
+        ...request,
+        account: this.walletClient.account ?? null // Ensure the account property is included
+      });
+      const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
+
+      // Parse events to get job ID
+      const jobId = receipt.logs[0].topics[1]; // Assuming first topic after event signature is job ID
+      if (!jobId) {
+        throw new Error('Failed to retrieve job ID from transaction receipt');
+      }
+      return jobId;
     } catch (error) {
       console.error('Failed to start compute job:', error);
       throw error;
     }
   }
 
-  /**
-   * Check status of compute job
-   * @param jobId Compute job ID
-   */
   async checkComputeStatus(jobId: string): Promise<ComputeJob> {
     try {
-      const [result, status] = await this.contract.getComputeResult(jobId);
+      const [result, status] = await this.publicClient.readContract({
+        address: this.contractAddress,
+        abi: computeABI,
+        functionName: 'getComputeResult',
+        args: [jobId as `0x${string}`]
+      });
 
       if (status === 2) { // Completed
-        const decryptedResult = await this.decryptComputeResult(result);
+        const decryptedResult = await this.decryptComputeResult(Buffer.from(result.slice(2), 'hex'));
         return {
           jobId,
           status: 'Completed',
@@ -105,7 +145,7 @@ export class OceanComputeService {
 
       return {
         jobId,
-        status: this.mapStatus(status)
+        status: this.mapStatus(status as ComputeStatus)
       };
     } catch (error) {
       console.error('Failed to check compute status:', error);
@@ -113,115 +153,70 @@ export class OceanComputeService {
     }
   }
 
-  /**
-   * Get compute allowance for user
-   * @param dataToken Ocean data token address
-   * @param user User address
-   */
-  async getComputeAllowance(
-    dataToken: string,
-    user: string
-  ): Promise<number> {
-    return await this.contract.computeAllowance(dataToken, user);
-  }
-
-  /**
-   * Encrypt compute parameters
-   * @param params Compute parameters
-   */
-  private async encryptComputeParams(params: ComputeParams): Promise<string> {
-    // Generate random key for encryption
-    const key = await Sapphire.randomBytes(32, "compute_params");
+  private async encryptComputeParams(params: ComputeParams): Promise<`0x${string}`> {
+    const key = randomBytes(32);
+    const nonce = randomBytes(12);
     
-    // Encrypt parameters
-    const nonce = ethers.utils.randomBytes(12);
-    const encryptedData = await Sapphire.encrypt(
+    const serializedParams = JSON.stringify(params);
+    const encryptedData = await encrypt(
       key,
-      ethers.utils.hexlify(nonce),
-      ethers.utils.toUtf8Bytes(JSON.stringify(params)),
-      new Uint8Array()
+      Buffer.from(serializedParams),
+      { additionalData: Buffer.from('compute_params') }
     );
 
-    return ethers.utils.hexlify(encryptedData);
+    return `0x${encryptedData.toString('hex')}`;
   }
 
-  /**
-   * Decrypt compute results
-   * @param encryptedResult Encrypted computation result
-   */
-  private async decryptComputeResult(encryptedResult: string): Promise<any> {
+  private async decryptComputeResult(encryptedResult: Uint8Array): Promise<any> {
     try {
       const key = await this.getResultDecryptionKey();
-      const decryptedData = await Sapphire.decrypt(
+      const decryptedData = await decrypt(
         key,
-        ethers.utils.arrayify(encryptedResult)
+        Buffer.from(encryptedResult),
+        { additionalData: Buffer.from('compute_result') }
       );
 
-      return JSON.parse(ethers.utils.toUtf8String(decryptedData));
+      return JSON.parse(decryptedData.toString());
     } catch (error) {
       console.error('Failed to decrypt result:', error);
       throw error;
     }
   }
 
-  /**
-   * Map numeric status to string
-   * @param status Numeric status from contract
-   */
-  private mapStatus(status: number): ComputeJob['status'] {
-    const statusMap = {
+  private mapStatus(status: ComputeStatus): ComputeJob['status'] {
+    const statusMap: Record<ComputeStatus, ComputeJob['status']> = {
       0: 'Pending',
       1: 'Processing',
       2: 'Completed',
       3: 'Failed'
     };
-    return statusMap[status] as ComputeJob['status'];
+    return statusMap[status];
   }
 
-  /**
-   * Get decryption key for results
-   */
-  private async getResultDecryptionKey(): Promise<string> {
-    // Implementation would get key from secure storage or generate from seed
-    const key = await Sapphire.randomBytes(32, "result_key");
-    return ethers.utils.hexlify(key);
+  private async getResultDecryptionKey(): Promise<Buffer> {
+    // In a real implementation, this would get the key from secure storage
+    return randomBytes(32);
   }
 }
+import { createCipheriv, createDecipheriv } from 'crypto';
 
-// Hook for React components
-export function useOceanCompute(
-  web3Provider: ethers.providers.Web3Provider,
-  contractAddress: string,
-  oceanProviderUrl: string
-) {
-  const [computeService] = React.useState(
-    () => new OceanComputeService(web3Provider, contractAddress, oceanProviderUrl)
-  );
-
-  const startCompute = React.useCallback(
-    async (datasetDid: string, algorithmDid: string, params: ComputeParams) => {
-      return await computeService.startComputeJob(datasetDid, algorithmDid, params);
-    },
-    [computeService]
-  );
-
-  const checkStatus = React.useCallback(
-    async (jobId: string) => {
-      return await computeService.checkComputeStatus(jobId);
-    },
-    [computeService]
-  );
-
-  const getAllowance = React.useCallback(
-    async (dataToken: string, user: string) => {
-      return await computeService.getComputeAllowance(dataToken, user);
-    },
-    [computeService]
-  );
-
-  return {
-    startCompute,
-    checkStatus,
-    getAllowance
-  };
+function encrypt(key: Buffer, data: Buffer, options: { additionalData: Buffer; }): Buffer {
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, nonce);
+  cipher.setAAD(options.additionalData);
+  const encrypted = Buffer.concat([cipher.update(data), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([nonce, tag, encrypted]);
 }
+
+function decrypt(key: Buffer, encryptedData: Buffer, options: { additionalData: Buffer; }): Buffer {
+  const nonce = encryptedData.slice(0, 12);
+  const tag = encryptedData.slice(12, 28);
+  const data = encryptedData.slice(28);
+  const decipher = createDecipheriv('aes-256-gcm', key, nonce);
+  decipher.setAAD(options.additionalData);
+  decipher.setAuthTag(tag);
+  const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
+  return decrypted;
+}
+

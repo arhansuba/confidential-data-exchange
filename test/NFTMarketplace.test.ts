@@ -19,7 +19,7 @@ describe("NFTMarketplace", function () {
         const ConfidentialAIModelContract = new web3.eth.Contract(ConfidentialAIModelABI);
         confidentialAIModel = await ConfidentialAIModelContract
             .deploy({ data: ConfidentialAIModelABI.bytecode })
-            .send({ from: accounts[0], gas: 5000000 });
+            .send({ from: accounts[0], gas: "5000000" });
         
         // Mint a model NFT
         await confidentialAIModel.methods.mintModel(modelName, modelURI).send({ from: accounts[0] });
@@ -28,7 +28,7 @@ describe("NFTMarketplace", function () {
         const NFTMarketplaceContract = new web3.eth.Contract(NFTMarketplaceABI);
         nftMarketplace = await NFTMarketplaceContract
             .deploy({ data: NFTMarketplaceABI.bytecode, arguments: [confidentialAIModel.options.address] })
-            .send({ from: accounts[0], gas: 5000000 });
+            .send({ from: accounts[0], gas: "5000000" });
     });
 
     describe("Deployment", function () {
